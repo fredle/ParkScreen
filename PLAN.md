@@ -23,7 +23,7 @@ shows it.
 
 **Non-goals (v1)**
 - macOS/Linux hosts. The architecture allows them later.
-- Audio. The browser can play it, but it is out of scope for v1.
+- Audio in the MVP. It moves to Phase 3 (§7.1).
 - Use while driving.
 - Streaming over the internet when the car and PC are on different networks.
   This is a v2 cloud relay feature (§6.3).
@@ -39,8 +39,8 @@ shows it.
 │  │ ParkScreen IDD   │───────────▶│ Host Agent             │  │
 │  │ (IddCx UMDF      │◀───────────│  - capture             │  │
 │  │  virtual monitor)│  mode ctrl  │  - HW H.264 encode    │  │
-│  └──────────────────┘             │  - HTTPS/WSS server   │  │
-│                                   │  - WebRTC (optional)  │  │
+│  └──────────────────┘             │  - HTTP/WS signalling │  │
+│                                   │  - WebRTC sender      │  │
 │                                   │  - input injection    │  │
 │                                   │  - tray UI / pairing  │  │
 │                                   └──────────┬────────────┘  │
@@ -49,7 +49,7 @@ shows it.
                                     video ▼    ▲ touch, viewport size
 ┌──────────────────────────── Tesla ───────────┴───────────────┐
 │  Tesla browser (Chromium) → ParkScreen web client            │
-│   capability probe → best transport → decode → <canvas>      │
+│   WebRTC (JPEG/WS fallback) → full-screen <video>            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,36 +63,43 @@ There are three deliverables:
 
 ---
 
-## 3. The Tesla browser: constraints that drive the design
+## 3. The Tesla browser: working assumptions
 
-The Tesla browser is Chromium-based, but its version and features vary with
-the car's hardware (Intel Atom MCU vs. AMD Ryzen MCU) and firmware. We cannot
-assume WebRTC, WebCodecs or MSE works on every car. So:
+We stopped treating browser support as unknown. We design against the
+following assumptions, based on public information as of October 2026. A
+short check on a real car (Phase 0) confirms them, but it no longer decides
+the architecture.
 
-1. **Phase 0 is a capability probe** (§8). We ship a test page and run it on
-   real cars before committing to a transport.
-2. **The client chooses a transport at runtime** from a ranked list and falls
-   back automatically.
-3. **We need a secure context (HTTPS).** WebCodecs and some other APIs only
-   work on HTTPS pages, and an HTTPS page cannot open `ws://` to a LAN IP
-   (mixed content). Self-signed certificates bring up a warning that is
-   painful to click through on the car. Our fix is in §6.2.
+### 3.1 Assumptions
 
-Known screen and viewport facts (to confirm in Phase 0):
+| # | Assumption | Basis | Design consequence |
+|---|---|---|---|
+| A1 | The browser is **Chromium-based** on every car, and recent firmware tracks a fairly modern Chromium. | Tesla moved to Chromium in 2019; the 2026.26 browser update added new features that need a current engine. | Target evergreen Chromium APIs; no polyfills for old Chrome. |
+| A2 | **WebRTC works, including H.264 video receive and data channels**, on AMD Ryzen cars running 2026.26 or later. | 2026.26 officially supports Google Meet, Microsoft Teams, Discord and Slack video calls in the browser. All of these are WebRTC. | **WebRTC is the primary transport.** |
+| A3 | WebRTC receive also works on **Intel Atom** cars, but decoding is weaker. Camera and mic features are Ryzen-only. | Existing phone and laptop mirroring products (TeslaStream, CrankWheel, Tesla Display) stream to the car browser over WebRTC; 2026.26 camera/mic is limited to Ryzen. | Intel cars get a **720p30 default** preset. We never rely on camera or mic. |
+| A4 | The **Fullscreen API** works on a `<video>` element. | 2026.26 added full-screen video to the browser. | Render into `<video>` and call `requestFullscreen()` to use the whole panel, with no browser chrome. |
+| A5 | `<video>` playback is **blocked while the car is in gear** and allowed in Park. | Long-standing Tesla policy. | ParkScreen is Park-only. We use a normal `<video>` element and do **not** use canvas tricks to get around the lockout. |
+| A6 | `RTCPeerConnection` works on plain `http://` pages. Camera and mic, WebCodecs and some other APIs need HTTPS. | Chromium platform rules. | v1 can run from `http://<pc-ip>` on the LAN with no certificates. HTTPS becomes a Phase 3 polish item, not a blocker. |
+| A7 | DRM (EME) is irrelevant. | We stream our own non-DRM video. | None. |
 
-| Vehicle | Panel | Notes |
+### 3.2 Target devices
+
+| Tier | Cars | Default stream |
 |---|---|---|
-| Model 3 / Y | 1920×1200 | Browser viewport is smaller because of browser chrome and the car UI |
-| Model S / X (2021+) | 2200×1300 | |
-| Cybertruck | 18.5" panel | To be measured |
+| **Primary** | AMD Ryzen infotainment (Model 3/Y since about 2021–22, Highland and Juniper, S/X 2021+, Cybertruck) on 2026.26 or later | Full-screen at native panel resolution, 60 fps, WebRTC H.264 |
+| **Secondary** | Intel Atom infotainment | 1280×720 at 30 fps, WebRTC H.264. JPEG fallback if WebRTC fails |
 
-Because the viewport differs between cars and changes with browser full-screen
-mode, the client reports its real pixel size
-(`innerWidth × innerHeight × devicePixelRatio`), and the driver adds that exact
-mode to the virtual monitor (§4.3). That way frames are 1:1, with no scaling
-blur.
+### 3.3 Panel resolutions
 
----
+| Vehicle | Panel | Full-screen `<video>` target |
+|---|---|---|
+| Model 3 / Y | 1920×1200 | 1920×1200 |
+| Model S / X (2021+) | 2200×1300 | 2200×1300 |
+| Cybertruck | 18.5" panel | Use the reported size |
+
+The client still reports its real pixel size
+(`screen.width × screen.height × devicePixelRatio` once full-screen), and the
+driver adds that exact mode (§4.3), so frames are 1:1 with no scaling blur.
 
 ## 4. Virtual display driver (`driver/`)
 
@@ -129,21 +136,47 @@ We ship A first. B is a performance milestone.
   `PLUG_MONITOR`, `UNPLUG_MONITOR`, `SET_MODES(list)`, `GET_STATUS`.
 - In Stage B, also `GET_SHARED_TEXTURE_HANDLE` and a frame-ready event.
 
-### 4.4 Signing and installation (the biggest non-code risk)
-- Windows 10/11 needs drivers to be **Microsoft-signed**. The path is an
-  **EV code-signing certificate** (about $300–500/year) plus **attestation
-  signing** through the Partner Center Hardware Dev Center. Start this
-  early because verification takes weeks.
-- **Development:** test-signing mode (`bcdedit /set testsigning on`).
-- **Fallback for early users:** the host agent can also drive an existing
-  signed IddCx driver (e.g. the open-source *Virtual Display Driver* or
-  *parsec-vdd*) through the same abstraction (`DisplayBackend` trait). This
-  lets us release the host and client before our own driver is signed.
-- Installer: WiX/MSIX bundle that installs the driver with `pnputil`/`devcon`,
-  installs the host agent as a per-user startup app, and adds a firewall rule
-  for the agent's port.
+### 4.4 Signing and installation
 
----
+You already have an **Azure Trusted Signing** account (now also called Azure
+Artifact Signing). Here is where it fits:
+
+| What | Signed with | Notes |
+|---|---|---|
+| Host agent `.exe`/`.dll`, Tauri app, installer (MSI/MSIX) | **Azure Trusted Signing** ✅ | The intended use: it builds SmartScreen reputation and avoids "unknown publisher" warnings. Run it in CI with `signtool` and the Trusted Signing dlib, or with the `azure/trusted-signing-action` GitHub Action. |
+| Driver binary (`ParkScreenIdd.dll`) and catalog (`.cat`) | **Azure Trusted Signing, to be tested in Phase 0** ⚠️ | See below. |
+| Microsoft attestation signing through Partner Center | ❌ Not possible with Trusted Signing | Partner Center needs an **EV** certificate on the account. Microsoft has confirmed Trusted Signing is not EV and is not supported for this. |
+
+**Why the driver may still work with Trusted Signing:** ParkScreen's driver is
+a **user-mode (UMDF) driver**. Windows only requires a *Microsoft* signature
+for *kernel-mode* drivers. User-mode drivers only need a valid signature that
+chains to a trusted root. This is how open-source IddCx drivers such as
+*Virtual Display Driver* ship today: they are signed with a
+**SignPath Foundation** certificate, not attestation-signed. Trusted Signing
+certificates chain to Microsoft's trusted "Identity Verification" root and are
+time-stamped, so:
+
+1. **Phase 0 spike:** sign the `.dll` and `.cat` with Trusted Signing, then
+   install with `pnputil /add-driver parkscreen.inf /install` on a clean
+   Windows 11 24H2+ VM with Secure Boot, HVCI (memory integrity) and Smart App
+   Control all on. Check that the device starts with no warnings, and test
+   Windows 10 22H2 too.
+2. **If that works:** use Trusted Signing for everything, at no extra cost.
+3. **If PnP rejects it** (Microsoft states Trusted Signing "doesn't support
+   driver signing", so this is a real possibility), in order of preference:
+   - (a) Apply to **SignPath Foundation** (free if the driver is open source),
+     like Virtual Display Driver does.
+   - (b) Buy an **EV certificate** (about $300–500/year) and do Partner Center
+     attestation signing. This is the most robust option.
+   - (c) Until then, ship with the `ThirdPartyVdd` backend (§5) that drives an
+     already-signed open-source IddCx driver.
+
+**Development:** test-signing mode (`bcdedit /set testsigning on`) with a
+self-signed certificate.
+
+**Installer:** WiX MSI (signed with Trusted Signing). It installs the driver
+package with `pnputil`, installs the host agent as a per-user startup app,
+and adds a firewall rule (private networks only) for the agent's port.
 
 ## 5. Host agent (`host/`)
 
@@ -154,7 +187,7 @@ A Rust process with a tray icon (Tauri), split into modules:
 | `display` | `DisplayBackend` trait; `ParkScreenIdd` and `ThirdPartyVdd` implementations; plug/unplug; set modes |
 | `capture` | WGC capture of the virtual monitor's `HMONITOR`; dirty-rect and "no change" detection; cursor shape and position |
 | `encode` | **Media Foundation H.264 hardware MFT** (NVENC / Quick Sync / AMF are all exposed through MF), and a software fallback (openh264). Also a JPEG encoder for the fallback transport. |
-| `transport` | HTTPS + WSS server (axum + rustls); optional WebRTC (`webrtc-rs`) |
+| `transport` | HTTP + WS signalling server (axum) on `:8765`; WebRTC sender (`webrtc-rs`) with H.264 track and data channels; JPEG/WS fallback |
 | `input` | Turns client touch and pointer events into `InjectSyntheticPointerInput` (real touch) or `SendInput` (mouse mode), mapped to the virtual monitor's desktop coordinates |
 | `pairing` | Device pairing, tokens, certificate management (§6) |
 | `ui` | Tray menu: status, the connected car, resolution, quality preset, "disconnect", and the URL/PIN to type in the car |
@@ -190,25 +223,23 @@ second. The host changes bitrate, fps and (as a last resort) resolution scale.
    in the car. The host agent can offer to turn it on.
 4. **Different networks**: needs the cloud relay (v2, §6.3).
 
-### 6.2 HTTPS on the LAN without certificate warnings
-We use the same pattern as Plex's `*.plex.direct`:
+### 6.2 How the car reaches the PC
 
-- We own a domain, e.g. `parkscreen.direct`. Each host gets a unique ID and a
-  **publicly trusted wildcard certificate** for `*.<hostid>.parkscreen.direct`.
-  Our backend issues it via ACME DNS-01 and the host fetches it on first run
-  and on renewal.
-- Our DNS answers `192-168-1-50.<hostid>.parkscreen.direct` with
-  `192.168.1.50`.
-- The car opens `https://parkscreen.app`. That static page (served from a
-  CDN) looks up the host by pairing code and redirects to the host's
-  LAN hostname. From then on everything is direct HTTPS/WSS on the LAN, with a
-  valid certificate and a secure context.
-- **Offline fallback:** the host also serves plain `http://<lan-ip>:port`
-  with the JPEG and WebSocket transport, which needs no secure context. This
-  is worse quality, but it always works.
+Because WebRTC works on plain HTTP pages (A6), v1 needs no certificates:
 
-Note: some routers block DNS answers that point to private IPs ("DNS rebinding
-protection"). The probe detects this and falls back to the IP URL.
+- **v1 (LAN, zero infrastructure):** the host agent serves the client at
+  `http://<pc-lan-ip>:8765`. Signalling (SDP and ICE) runs over `ws://` on the
+  same port, then media flows over WebRTC directly on the LAN. The tray app
+  shows the URL, and the user bookmarks it once in the car (bookmarks sync
+  across cars since 2026.26). We use a fixed port and the PC's hostname where
+  mDNS resolves, so a changed DHCP address doesn't break the bookmark.
+- **Phase 3 (nice URL plus HTTPS):** the car opens `https://parkscreen.app`, a
+  static CDN page. Signalling goes through our small WSS backend, and media is
+  still **P2P over the LAN** through WebRTC ICE. Opening WebRTC to a LAN peer
+  from an HTTPS page is not mixed content. This gives one memorable URL with
+  no per-PC certificates, and it also opens the way to the cloud relay.
+- **No `*.parkscreen.direct` wildcard certificate service.** We dropped this
+  from the plan, because WebRTC removes the need for it.
 
 ### 6.3 Cloud relay (v2)
 - Signalling over WSS through our backend, with WebRTC media P2P when
@@ -217,8 +248,8 @@ protection"). The probe detects this and falls back to the IP URL.
 - Costs money (TURN bandwidth), so it would probably be a paid tier.
 
 ### 6.4 Pairing and auth
-- The tray app shows a **6-digit code**. The user types
-  `parkscreen.app` on the car and enters the code. (A QR code does not help
+- The tray app shows a **6-digit code**. In v1 the user opens the LAN URL on the car;
+  in Phase 3 they open `parkscreen.app`. Either way they enter the code. (A QR code does not help
   because the car cannot scan it.)
 - Pairing exchanges a long-lived device token, stored in the car browser's
   `localStorage` (and as a cookie), so later visits connect without a code.
@@ -231,21 +262,29 @@ protection"). The probe detects this and falls back to the IP URL.
 
 ## 7. Web client (`web/`)
 
-### 7.1 Transports, ranked
-The client runs a probe at startup and picks the first transport that works:
+### 7.1 Transports
 
-| Rank | Transport | Decode | Needs |
+| Rank | Transport | Used on | Decode |
 |---|---|---|---|
-| 1 | **WebRTC** (H.264 video track + data channel for input and cursor) | Browser's `<video>`, hardware | `RTCPeerConnection` and H.264 in SDP |
-| 2 | **WebCodecs over WSS** (raw H.264 Annex-B access units) | `VideoDecoder` → `<canvas>`/WebGL | Secure context and `VideoDecoder` |
-| 3 | **MSE over WSS** (fragmented MP4, one frame per fragment) | `<video>` with `MediaSource` | `MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01F"')` |
-| 4 | **JPEG over WS** (dirty tiles) | `createImageBitmap` → canvas | Nothing special; always works |
+| 1 | **WebRTC**: H.264 Constrained Baseline video track, plus an unreliable data channel for pointer and cursor, and a reliable one for control | All cars (A2, A3) | `<video>`, hardware decode, full-screen |
+| 2 | **JPEG dirty tiles over WebSocket** | Only if WebRTC fails to connect (old firmware, or a network blocking UDP) | `createImageBitmap` → `<canvas>` |
 
-The host supports all four from the same capture pipeline: the H.264 bitstream
-feeds 1–3, and the JPEG tile encoder feeds 4.
+We have dropped MSE and WebCodecs from v1. WebRTC covers the target cars and
+already gives us jitter buffering, congestion control (via the
+Transport-CC/GCC algorithm in `webrtc-rs`), NACK and PLI keyframe requests for
+free. WebCodecs over WSS stays a **Phase 4 experiment** for lower latency on
+Ryzen cars (it needs HTTPS, so it depends on Phase 3).
 
-MSE adds latency because of buffering. We fight it by using `liveSeekableRange`
-and seeking to the live edge when the buffer grows past about 100 ms.
+Low-latency WebRTC tuning:
+- Set `playoutDelayHint`/`jitterBufferTarget = 0` on the receiver.
+- Send at most 1 frame in flight, and prefer temporal-layer drops over
+  queuing.
+- Use `contentHint = "text"` on the host side so the encoder favours sharpness
+  over motion.
+- The client tells the host to send at most `min(panel fps, 60)`.
+
+Audio: a WebRTC audio track (WASAPI loopback → Opus) is cheap to add, so we
+move it from non-goal to Phase 3.
 
 ### 7.2 UI
 - Full-screen canvas or video, with a black letterbox if the aspect ratio
@@ -274,44 +313,48 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 
 ## 8. Roadmap
 
-### Phase 0: Feasibility (1–2 weeks)
-- [ ] `web/probe`: a page that reports the user agent and Chromium version,
-      viewport and DPR, WebRTC and H.264 support, WebCodecs, MSE codec
-      strings, WebGL, Wake Lock, secure-context behaviour, measured WS
-      throughput and RTT to a test host, and whether rebinding DNS resolves.
-      It uploads an anonymous report.
-- [ ] Run it on at least one Intel and one AMD Tesla, in Park.
-- [ ] **Decision gate:** pick the default transport. Confirm the
-      `parkscreen.direct` certificate approach is needed and works.
-- [ ] Start EV certificate and Partner Center registration (long lead time).
+### Phase 0: Validate assumptions and signing (1 week)
+- [ ] `web/probe`: one page that checks A1–A6 on a real car (user agent,
+      `RTCPeerConnection` with H.264 in `getCapabilities`, Fullscreen API on
+      `<video>`, panel size and DPR). It plays a 60-second WebRTC loopback
+      stream from a test host, logs decode fps and dropped frames, and
+      uploads a report.
+- [ ] Run it on at least one Ryzen car (and an Intel car if available), in
+      Park.
+- [ ] **Signing spike:** sign a build of Microsoft's `IddSampleDriver` with
+      Azure Trusted Signing and install it on a Windows 11 VM with Secure Boot,
+      HVCI and Smart App Control on (§4.4). Decide on Trusted Signing,
+      SignPath or an EV certificate.
 
-### Phase 1: MVP over LAN (4–6 weeks)
-- [ ] Host: `ThirdPartyVdd` backend (existing signed driver), WGC capture, MF
-      H.264 encode, WSS server, and the transport chosen in Phase 0, plus JPEG
-      fallback.
-- [ ] Web: player for the chosen transport, plus JPEG fallback.
-- [ ] Viewport mode negotiation (if the backend supports custom modes).
-- [ ] Manual pairing with a PIN, and the plain HTTP IP fallback.
-- **Exit criteria:** extend a desktop to a Model 3 at native viewport
-  resolution, 30 fps or more, under 150 ms latency, stable for 1 hour.
+### Phase 1: MVP over LAN (4–5 weeks)
+- [ ] Host: `ThirdPartyVdd` backend, WGC capture, MF H.264 hardware encode,
+      `webrtc-rs` sender, HTTP and WS signalling server on `:8765`.
+- [ ] Web: WebRTC player, full-screen button, stats overlay, JPEG fallback.
+- [ ] Viewport mode negotiation.
+- [ ] PIN pairing.
+- [ ] Sign the host binaries and installer with Azure Trusted Signing in CI.
+- **Exit criteria:** extend a desktop to a Ryzen Model 3/Y at
+  1920×1200, 60 fps, under 100 ms latency, stable for 1 hour. On Intel,
+  720p30 must be usable.
 
 ### Phase 2: Own driver plus input (4–6 weeks)
-- [ ] ParkScreen IddCx driver (Stage A): dynamic modes, plug/unplug, IOCTLs.
-- [ ] Touch and mouse input injection, and trackpad mode.
+- [ ] ParkScreen IddCx driver (Stage A): dynamic modes, plug/unplug, IOCTLs,
+      signed per the Phase 0 decision.
+- [ ] Touch and mouse input over the data channel, and trackpad mode.
 - [ ] Hardware cursor channel.
-- [ ] Adaptive bitrate.
 
 ### Phase 3: Product polish (3–4 weeks)
-- [ ] `parkscreen.direct` DNS and certificate service, and `parkscreen.app`
-      landing and pairing page.
-- [ ] Installer (signed driver, agent, firewall rule) and auto-update.
-- [ ] Tray UI, quality presets, and the laptop-hotspot helper.
-- [ ] Attestation-signed driver release.
+- [ ] `parkscreen.app` page and WSS signalling backend (media stays P2P on the
+      LAN).
+- [ ] Audio track.
+- [ ] Installer, auto-update, tray UI, quality presets, laptop-hotspot helper.
 
 ### Phase 4: Performance and v2
 - [ ] Driver Stage B (shared-texture frames, dirty rectangles).
-- [ ] Cloud relay (WebRTC with TURN) for different networks.
-- [ ] Audio, multiple monitors, HEVC/AV1 where the car can decode them.
+- [ ] TURN relay for when the car and PC are on different networks.
+- [ ] WebCodecs-over-WSS experiment; HEVC/AV1 if the car's decoder supports
+      them in WebRTC.
+- [ ] Multiple monitors.
 
 ---
 
@@ -319,15 +362,13 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Tesla browser lacks WebRTC, WebCodecs or MSE on some cars | Lower quality | Four-tier transport fallback; Phase 0 probe on real hardware |
-| Firmware updates change browser behaviour | Breakage | The probe runs on every connect; telemetry on which transport is chosen; fallback chain |
-| Driver signing delay or cost | Can't ship our own driver | Third-party signed VDD backend from day one; start EV and Partner Center in Phase 0 |
-| Mixed content and certificate warnings | Poor setup experience | `*.parkscreen.direct` trusted wildcard; plain HTTP JPEG fallback |
-| Router DNS-rebinding protection | Hostname doesn't resolve | Detect it, fall back to IP URL, and document the router setting |
-| Phone hotspot client isolation | Can't connect | Detect it, recommend the laptop-hotspot mode |
-| Weak decode on Intel Atom cars | Stutter | 30 fps / 720p "Battery" preset; adaptive quality |
-| Remote input is a security surface | PC takeover | Paired-token auth, input off by default, LAN-only by default, TLS everywhere |
-| Use while driving | Safety / legal | Built for Park; we do **not** detect or work around Tesla's driving video lockout. The JPEG fallback also respects that lockout: the client pauses if the page is hidden or blocked. Clear in-app warnings. |
+| An assumption (A1–A6) is wrong on some cars | Lower quality or no WebRTC | Phase 0 probe; JPEG-over-WebSocket fallback |
+| Firmware updates change browser behaviour | Breakage | Feature detection on every connect; telemetry on which transport is used |
+| PnP rejects a Trusted Signing signature on the driver | Can't ship our own driver yet | Phase 0 spike; SignPath or EV as a fallback; ship with the third-party driver backend until then |
+| Phone hotspot client isolation, or UDP blocked | WebRTC can't connect | ICE over TCP host candidates; JPEG/WS fallback; recommend laptop-hotspot mode |
+| Weak decode on Intel Atom cars | Stutter | 720p30 default; adaptive bitrate through WebRTC congestion control |
+| Remote input is a security surface | PC takeover | Paired-token auth, input off by default, LAN-only by default. WebRTC media and data channels are always DTLS-encrypted; v1 signalling is plain WS on the LAN (only SDP and the token), and it moves to WSS in Phase 3 |
+| Use while driving | Safety / legal | Built for Park. We use a standard `<video>` element, so Tesla's driving lockout applies as designed. We do **not** use canvas tricks to get around it. The JPEG fallback is only used when WebRTC fails, and it stops while the page is hidden or video is blocked. Clear in-app warnings. |
 
 ---
 
@@ -349,13 +390,13 @@ ParkScreen/
 ├── web/
 │   ├── probe/         # Phase 0 capability probe
 │   └── client/        # player
-├── backend/           # parkscreen.app + DNS/cert issuance (Phase 3)
+├── backend/           # parkscreen.app signalling (Phase 3)
 └── installer/         # WiX / MSIX
 ```
 
 ## 11. Open questions
-1. Is there a Tesla-side way to keep the browser full-screen or remove the
-   browser chrome, to make the most of the panel? (Measure in Phase 0.)
+1. Does full-screen `<video>` stay full-screen when the user touches it
+   (needed for touch input), or does the car's UI come back? (Phase 0.)
 2. Should we support "mirror" mode (duplicating an existing monitor) as well
    as "extend"? It is cheap to add in the host because it is just capturing a
    different `HMONITOR`.
