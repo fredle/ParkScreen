@@ -9,6 +9,7 @@ use crate::{
     agent::SessionHandler,
     capture::Capture,
     display::{DisplayBackend, Mode},
+    input::{InputInjector, InputSession, NullInput, SharedInjector},
     encode::{Encoder, EncoderConfig},
 };
 use async_trait::async_trait;
@@ -43,6 +44,7 @@ use tokio::sync::mpsc;
 use webrtc::media_stream::track_local::TrackLocalEvent;
 use tracing::{info, warn};
 use webrtc::{
+    data_channel::{DataChannel, DataChannelEvent},
     media_stream::{
         track_local::{static_sample::TrackLocalStaticSample, TrackLocal},
         Track,
@@ -60,10 +62,21 @@ pub trait MediaFactory: Send + Sync + 'static {
     fn make(&self, mode: Mode, bitrate_kbps: u32) -> Result<(Box<dyn Capture>, Box<dyn Encoder>), String>;
 }
 
+fn release(inj: &SharedInjector, session: &Mutex<InputSession>) {
+    session.lock().unwrap().release_all(inj.lock().unwrap().as_mut());
+}
+
+/// Decides, per message, whether a car may inject input (so revoking takes effect at once).
+pub type InputGate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 struct Handler {
     gathered: mpsc::Sender<()>,
     state: mpsc::UnboundedSender<RTCPeerConnectionState>,
+    car_id: String,
+    injector: SharedInjector,
+    gate: InputGate,
+    input: Arc<Mutex<InputSession>>,
 }
 
 #[async_trait]
@@ -75,6 +88,36 @@ impl PeerConnectionEventHandler for Handler {
     }
     async fn on_connection_state_change(&self, s: RTCPeerConnectionState) {
         let _ = self.state.send(s);
+    }
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        if dc.label().await.ok().as_deref() != Some("input") {
+            return;
+        }
+        let (car, inj, gate, session) = (self.car_id.clone(), self.injector.clone(), self.gate.clone(), self.input.clone());
+        tokio::spawn(async move {
+            let mut warned = false;
+            while let Some(ev) = dc.poll().await {
+                match ev {
+                    DataChannelEvent::OnMessage(m) => {
+                        let mut inj = inj.lock().unwrap();
+                        let mut session = session.lock().unwrap();
+                        if gate(&car) {
+                            session.handle(Instant::now(), &m.data, inj.as_mut());
+                        } else {
+                            // Revoked or never enabled: make sure nothing is left pressed.
+                            session.release_all(inj.as_mut());
+                            if !warned {
+                                warn!("input from a car without input permission is being ignored");
+                                warned = true;
+                            }
+                        }
+                    }
+                    DataChannelEvent::OnClose => break,
+                    _ => {}
+                }
+            }
+            release(&inj, &session);
+        });
     }
 }
 
@@ -145,6 +188,7 @@ impl Interceptor for KeyframeForwarder {
 }
 
 struct Live {
+    input: Arc<Mutex<InputSession>>,
     adaptive: Adaptive,
     ctl: mpsc::UnboundedSender<Ctl>,
     pc: Arc<dyn PeerConnection>,
@@ -163,6 +207,8 @@ pub struct WebRtcHandler<D: DisplayBackend> {
     media: Arc<dyn MediaFactory>,
     viewport: HashMap<String, Mode>,
     live: HashMap<String, Live>,
+    injector: SharedInjector,
+    input_gate: InputGate,
     pub bitrate_kbps: u32,
     /// Bounds for adaptive bitrate; the starting bitrate is clamped into them.
     pub limits: Limits,
@@ -172,7 +218,15 @@ pub struct WebRtcHandler<D: DisplayBackend> {
 
 impl<D: DisplayBackend> WebRtcHandler<D> {
     pub fn new(display: D, media: Arc<dyn MediaFactory>) -> Self {
-        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), bitrate_kbps: 12_000, limits: Limits::default(), bind_ip: None }
+        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), injector: Arc::new(Mutex::new(Box::new(NullInput))), input_gate: Arc::new(|_| false), bitrate_kbps: 12_000, limits: Limits::default(), bind_ip: None }
+    }
+
+    /// Enable input injection. `gate(car_id)` is consulted for every message; the default
+    /// gate denies everything.
+    pub fn with_input(mut self, injector: Box<dyn InputInjector>, gate: InputGate) -> Self {
+        self.injector = Arc::new(Mutex::new(injector));
+        self.input_gate = gate;
+        self
     }
 
     /// Current adaptive target for a car's live session (kbps).
@@ -181,7 +235,10 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
     }
 
     async fn answer_offer(&mut self, car_id: &str, sdp: String) -> Result<Value, String> {
-        self.live.remove(car_id);
+        if let Some(old) = self.live.remove(car_id) {
+            let _ = old.pc.close().await;
+            release(&self.injector, &old.input);
+        }
         let mode = self.viewport.get(car_id).copied().unwrap_or(Mode { width: 1280, height: 720, refresh_hz: 30 });
         let err = |e: &dyn std::fmt::Display| e.to_string();
 
@@ -204,6 +261,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
             .with_ice_servers(vec![RTCIceServer { urls: vec!["stun:stun.cloudflare.com:3478".into()], ..Default::default() }])
             .build();
 
+        let input_state = Arc::new(Mutex::new(InputSession::default()));
         let (gathered_tx, mut gathered_rx) = mpsc::channel(1);
         let (state_tx, mut state_rx) = mpsc::unbounded_channel();
         let ip = self.bind_ip.clone().unwrap_or_else(local_ip);
@@ -211,7 +269,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
             .with_configuration(config)
             .with_media_engine(me)
             .with_interceptor_registry(registry)
-            .with_handler(Arc::new(Handler { gathered: gathered_tx, state: state_tx }))
+            .with_handler(Arc::new(Handler { gathered: gathered_tx, state: state_tx, car_id: car_id.to_string(), injector: self.injector.clone(), gate: self.input_gate.clone(), input: input_state.clone() }))
             .with_runtime(default_runtime().ok_or("no runtime")?)
             .with_udp_addrs(vec![format!("{ip}:0")])
             .build()
@@ -290,11 +348,15 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
             }
         });
 
-        self.live.insert(car_id.to_string(), Live { pc, stop, ctl: ctl_tx, adaptive: Adaptive::new(bitrate, mode.refresh_hz, self.limits) });
+        self.live.insert(car_id.to_string(), Live { input: input_state, pc, stop, ctl: ctl_tx, adaptive: Adaptive::new(bitrate, mode.refresh_hz, self.limits) });
         Ok(json!({ "kind": "answer", "sdp": local.sdp }))
     }
 }
 
+/// Capture + encode run on their own thread (they are CPU-bound and must never starve the
+/// async runtime that also drives ICE/DTLS/SCTP, i.e. input and RTCP). Encoded frames cross
+/// to the async side over a tiny bounded channel; if the network can't keep up, frames are
+/// dropped here rather than queued, which keeps latency low.
 async fn stream(
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
@@ -307,22 +369,43 @@ async fn stream(
 ) -> Result<(), String> {
     let (mut cap, mut enc) = media.make(mode, bitrate_kbps)?;
     let frame_dur = Duration::from_secs_f64(1.0 / mode.refresh_hz.max(1) as f64);
-    let mut tick = tokio::time::interval(frame_dur);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(2);
+
+    let thread_stop = stop.clone();
+    std::thread::Builder::new()
+        .name("parkscreen-encode".into())
+        .spawn(move || {
+            let mut next = Instant::now();
+            while !thread_stop.load(Ordering::Relaxed) && !tx.is_closed() {
+                while let Ok(c) = ctl.try_recv() {
+                    match c {
+                        Ctl::Keyframe => enc.request_keyframe(),
+                        Ctl::Bitrate(k) => enc.set_bitrate(k),
+                    }
+                }
+                if let Some(frame) = cap.next_frame() {
+                    let data = enc.encode(&frame);
+                    if !data.is_empty() && tx.try_send(data).is_err() && tx.is_closed() {
+                        break;
+                    }
+                }
+                // Fixed-rate pacing without drift; if we're behind, skip ahead instead of bursting.
+                next += frame_dur;
+                let now = Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                } else {
+                    next = now;
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
     let mut sent = 0u64;
     let mut last = Instant::now();
-    while !stop.load(Ordering::Relaxed) {
-        tick.tick().await;
-        while let Ok(c) = ctl.try_recv() {
-            match c {
-                Ctl::Keyframe => enc.request_keyframe(),
-                Ctl::Bitrate(k) => enc.set_bitrate(k),
-            }
-        }
-        let Some(frame) = cap.next_frame() else { continue };
-        let data = enc.encode(&frame);
-        if data.is_empty() {
-            continue;
+    while let Some(data) = rx.recv().await {
+        if stop.load(Ordering::Relaxed) {
+            break;
         }
         track
             .sample_writer(ssrc, pt)
@@ -335,6 +418,7 @@ async fn stream(
             last = Instant::now();
         }
     }
+    stop.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -402,6 +486,7 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
     async fn on_car_offline(&mut self, car_id: &str) {
         if let Some(l) = self.live.remove(car_id) {
             let _ = l.pc.close().await;
+            release(&self.injector, &l.input);
         }
         self.viewport.remove(car_id);
         let _ = self.display.unplug().await;
@@ -424,6 +509,3 @@ impl MediaFactory for SoftwareMedia {
     }
 }
 
-// Silence unused warning for Mutex import on some cfgs.
-#[allow(dead_code)]
-type _Unused = Mutex<()>;

@@ -6,7 +6,8 @@ use parkscreen_host::{
     identity::Identity,
     signalling,
 };
-use std::path::PathBuf;
+use parkscreen_host::input::NullInput;
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 
 fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PARKSCREEN_DATA") {
@@ -24,14 +25,19 @@ async fn main() {
     let url = std::env::var("PARKSCREEN_URL").unwrap_or_else(|_| "wss://parkscreen.leatham.net/ws/host".into());
     let dir = data_dir();
     let identity = Identity::load_or_create(&dir.join("host.key")).expect("identity");
-    let allow = AllowList::load(dir.join("cars.txt")).expect("allow-list");
+    let allow = Arc::new(Mutex::new(AllowList::load(dir.join("cars.txt")).expect("allow-list")));
     println!("host id: {}", identity.host_id());
 
     let (tx, events) = signalling::spawn(url, identity);
     let mut agent = Agent {
         tx: tx.clone(),
-        allow,
-        handler: WebRtcHandler::new(NullDisplay::default(), std::sync::Arc::new(SoftwareMedia::default())),
+        allow: allow.clone(),
+        input_on_pair: std::env::args().any(|a| a == "--with-input"),
+        handler: {
+            let gate = allow.clone();
+            WebRtcHandler::new(NullDisplay::default(), Arc::new(SoftwareMedia::default()))
+                .with_input(Box::new(NullInput), Arc::new(move |car| gate.lock().unwrap().input_allowed(car)))
+        },
         on_pair_code: Box::new(|code| println!("Pairing code (valid 5 min): {code}")),
     };
     if std::env::args().any(|a| a == "--pair") {

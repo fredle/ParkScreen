@@ -1,6 +1,7 @@
 import type { ServerToCar } from "./protocol";
 import { Session } from "./session";
 import { Signalling } from "./signalling";
+import { attachInput } from "./input";
 
 const ui = document.getElementById("ui")!;
 const video = document.getElementById("v") as HTMLVideoElement;
@@ -32,6 +33,7 @@ function pairingScreen(error = "") {
 let sig: Signalling | undefined;
 let session: Session | undefined;
 let stopReporting: (() => void) | undefined;
+let detachInput: (() => void) | undefined;
 
 function connect() {
   const token = store.get();
@@ -44,6 +46,7 @@ function connect() {
 function startSession(hostId: string) {
   session?.close();
   stopReporting?.();
+  detachInput?.();
   session = new Session(sig!, hostId, video, (s) => {
     if (s === "connected") {
       ui.hidden = true;
@@ -56,6 +59,7 @@ function startSession(hostId: string) {
   });
   session.start();
   stopReporting = session.startReporting();
+  detachInput = attachInput(video, session.sendInput);
 }
 
 function onMsg(m: ServerToCar) {
@@ -72,13 +76,12 @@ function onMsg(m: ServerToCar) {
       break;
     }
     case "host_online": startSession(m.host_id); break;
-    case "host_offline": stopReporting?.(); session?.close(); video.hidden = true; show("<p>Your PC went offline.</p>"); break;
+    case "host_offline": stopReporting?.(); detachInput?.(); session?.close(); video.hidden = true; show("<p>Your PC went offline.</p>"); break;
     case "signal": session?.onSignal(m.payload); break;
   }
 }
 
 // Double-tap-with-two-fingers stats overlay is a Phase 2 item; for now expose stats in the console.
 window.addEventListener("resize", () => session?.sendViewport());
-video.addEventListener("click", () => { if (!document.fullscreenElement) video.requestFullscreen?.().catch(() => {}); });
 
 connect();

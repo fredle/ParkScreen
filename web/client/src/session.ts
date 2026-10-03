@@ -4,6 +4,8 @@ import type { Signalling } from "./signalling";
 /** Receive-only WebRTC session to a host. The car creates the offer. */
 export class Session {
   pc: RTCPeerConnection;
+  /** Unreliable, unordered: a late pointer move is worthless, so never retransmit. */
+  private input?: RTCDataChannel;
   private pending: RTCIceCandidateInit[] = [];
   private remoteSet = false;
   constructor(private sig: Signalling, private hostId: string, private video: HTMLVideoElement, onState: (s: RTCPeerConnectionState) => void) {
@@ -21,6 +23,7 @@ export class Session {
     this.sig.send({ type: "signal", host_id: this.hostId, payload });
   }
   async start() {
+    this.input = this.pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
     this.pc.addTransceiver("video", { direction: "recvonly" });
     // Prefer H.264 (hardware decode); the host only offers Constrained Baseline.
     const caps = RTCRtpReceiver.getCapabilities("video");
@@ -35,6 +38,11 @@ export class Session {
     this.send({ kind: "offer", sdp: offer.sdp! });
     this.sendViewport();
   }
+  /** Send an input message if the channel is open (dropped otherwise). */
+  sendInput = (msg: object) => {
+    if (this.input?.readyState === "open") this.input.send(JSON.stringify(msg));
+  };
+
   sendViewport() {
     const dpr = window.devicePixelRatio || 1;
     this.send({ kind: "viewport", w: Math.round(screen.width * dpr), h: Math.round(screen.height * dpr), dpr, fps: 60 });

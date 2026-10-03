@@ -6,6 +6,7 @@ use crate::{
 use async_trait::async_trait;
 use protocol::{HostToServer, ServerToHost};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{info, warn};
 
@@ -46,7 +47,9 @@ impl<D: DisplayBackend> SessionHandler for ViewportOnly<D> {
 
 pub struct Agent<H: SessionHandler> {
     pub tx: Sender,
-    pub allow: AllowList,
+    pub allow: Arc<Mutex<AllowList>>,
+    /// Turn input injection on for cars that pair while this is set (explicit opt-in).
+    pub input_on_pair: bool,
     pub handler: H,
     /// Receives each pairing code so the tray UI / CLI can show it.
     pub on_pair_code: Box<dyn FnMut(String) + Send>,
@@ -69,10 +72,14 @@ impl<H: SessionHandler> Agent<H> {
             ServerToHost::PairCode { code, .. } => (self.on_pair_code)(code),
             ServerToHost::Paired { car_id } => {
                 info!(car = %&car_id[..8.min(car_id.len())], "car paired");
-                self.allow.add(&car_id);
+                let mut al = self.allow.lock().unwrap();
+                al.add(&car_id);
+                if self.input_on_pair {
+                    al.set_input(&car_id, true);
+                }
             }
             ServerToHost::Signal { car_id, payload } => {
-                if !self.allow.allows(&car_id) {
+                if !self.allow.lock().unwrap().allows(&car_id) {
                     warn!("ignoring signal from car not in allow-list");
                     return;
                 }

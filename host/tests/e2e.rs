@@ -1,7 +1,6 @@
 //! Host agent against the real server, in-process.
 use parkscreen_host::{
     agent::{Agent, ViewportOnly},
-    allowlist::AllowList,
     display::NullDisplay,
     identity::Identity,
     signalling::{self, Event},
@@ -45,7 +44,8 @@ async fn host_signs_in_pairs_and_gets_signals() {
     // Agent handles a paired car's viewport signal.
     let mut agent = Agent {
         tx,
-        allow: AllowList::in_memory(),
+        allow: Default::default(),
+        input_on_pair: false,
         handler: ViewportOnly { display: NullDisplay::default() },
         on_pair_code: Box::new(|_| {}),
     };

@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, fs, io, path::PathBuf};
 /// Cars this host will answer. The server also checks pairing; this is the
 /// defence in depth from the plan (a compromised VM can't attach an unknown car).
 /// Input injection is a separate, per-car opt-in that defaults to off.
+#[derive(Default)]
 pub struct AllowList {
     path: Option<PathBuf>,
     cars: BTreeSet<String>,
