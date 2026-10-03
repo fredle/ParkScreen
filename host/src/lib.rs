@@ -2,6 +2,7 @@
 //! (IddCx display, WGC capture, Media Foundation encode, pointer injection)
 //! plug in through the traits in `display`, `capture`, `encode` and `input`.
 
+pub mod adaptive;
 pub mod agent;
 pub mod allowlist;
 pub mod capture;

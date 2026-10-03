@@ -1,7 +1,5 @@
-import type { Signal } from "./protocol";
+import type { Signal, Stats } from "./protocol";
 import type { Signalling } from "./signalling";
-
-export type Stats = { fps: number; dropped: number; decodeMs: number; jitterMs: number };
 
 /** Receive-only WebRTC session to a host. The car creates the offer. */
 export class Session {
@@ -51,23 +49,38 @@ export class Session {
       else this.pending.push(p.candidate);
     }
   }
-  private last = { frames: 0, t: performance.now(), decode: 0, decoded: 0 };
+  private last = { frames: 0, t: performance.now(), decode: 0, dropped: 0, lost: 0, recv: 0 };
+
+  /** Stats for the interval since the last call (deltas, not totals). */
   async stats(): Promise<Stats> {
-    let fps = 0, dropped = 0, decodeMs = 0, jitterMs = 0;
+    const out: Stats = { fps: 0, dropped: 0, decode_ms: 0, jitter_ms: 0, loss_pct: 0 };
     const now = performance.now();
     (await this.pc.getStats()).forEach((r) => {
-      if (r.type === "inbound-rtp" && r.kind === "video") {
-        const dt = (now - this.last.t) / 1000;
-        fps = dt > 0 ? (r.framesDecoded - this.last.frames) / dt : 0;
-        const dd = r.framesDecoded - this.last.decoded;
-        decodeMs = dd > 0 ? ((r.totalDecodeTime - this.last.decode) / dd) * 1000 : 0;
-        this.last = { frames: r.framesDecoded, t: now, decode: r.totalDecodeTime, decoded: r.framesDecoded };
-        dropped = r.framesDropped ?? 0;
-        jitterMs = (r.jitterBufferDelay / Math.max(1, r.jitterBufferEmittedCount)) * 1000;
-      }
+      if (r.type !== "inbound-rtp" || r.kind !== "video") return;
+      const l = this.last;
+      const dt = (now - l.t) / 1000;
+      const frames = r.framesDecoded - l.frames;
+      out.fps = dt > 0 ? frames / dt : 0;
+      out.decode_ms = frames > 0 ? ((r.totalDecodeTime - l.decode) / frames) * 1000 : 0;
+      out.dropped = (r.framesDropped ?? 0) - l.dropped;
+      out.jitter_ms = r.jitterBufferEmittedCount > 0 ? (r.jitterBufferDelay / r.jitterBufferEmittedCount) * 1000 : 0;
+      const lost = (r.packetsLost ?? 0) - l.lost;
+      const recv = r.packetsReceived - l.recv;
+      out.loss_pct = lost + recv > 0 ? (Math.max(0, lost) / (lost + recv)) * 100 : 0;
+      this.last = { frames: r.framesDecoded, t: now, decode: r.totalDecodeTime, dropped: r.framesDropped ?? 0, lost: r.packetsLost ?? 0, recv: r.packetsReceived };
     });
-    return { fps, dropped, decodeMs, jitterMs };
+    return out;
   }
+
+  /** Report stats to the host once a second while connected. Returns a stop function. */
+  startReporting(): () => void {
+    const id = window.setInterval(async () => {
+      if (this.pc.connectionState !== "connected") return;
+      this.send({ kind: "stats", ...(await this.stats()) });
+    }, 1000);
+    return () => clearInterval(id);
+  }
+
   close() {
     this.pc.close();
   }

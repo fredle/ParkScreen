@@ -170,6 +170,15 @@ async fn streams_decodable_h264() {
     }
     assert!(got, "no IDR within 1.5 s of PLI");
 
+    // ---- adaptive: lossy stats from the car cut the bitrate, stream keeps flowing ----
+    let start = host.bitrate_of("car").unwrap();
+    host.on_signal("car", serde_json::json!({"kind":"stats","fps":60.0,"dropped":0,"decode_ms":3.0,"jitter_ms":20.0,"loss_pct":8.0})).await;
+    let after = host.bitrate_of("car").unwrap();
+    assert!(after < start, "bitrate not reduced: {start} -> {after}");
+    let len = sink.0.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(sink.0.lock().unwrap().len() > len, "stream stalled after adaptive change");
+
     // ---- live bitrate change: stream keeps flowing and decodable ----
     host.on_signal("car", serde_json::json!({"kind":"bitrate","kbps":1500})).await;
     let len = sink.0.lock().unwrap().len();

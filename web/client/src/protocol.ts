@@ -16,4 +16,9 @@ export type Signal =
   | { kind: "offer"; sdp: string }
   | { kind: "answer"; sdp: string }
   | { kind: "ice"; candidate: RTCIceCandidateInit | null }
-  | { kind: "viewport"; w: number; h: number; dpr: number; fps: number };
+  | { kind: "viewport"; w: number; h: number; dpr: number; fps: number }
+  | ({ kind: "stats" } & Stats)
+  | { kind: "keyframe" };
+
+/** One interval of receiver stats; mirrors host/src/adaptive.rs `ClientStats`. */
+export type Stats = { fps: number; dropped: number; decode_ms: number; jitter_ms: number; loss_pct: number };

@@ -31,7 +31,7 @@ function pairingScreen(error = "") {
 
 let sig: Signalling | undefined;
 let session: Session | undefined;
-let statsTimer: number | undefined;
+let stopReporting: (() => void) | undefined;
 
 function connect() {
   const token = store.get();
@@ -43,7 +43,7 @@ function connect() {
 
 function startSession(hostId: string) {
   session?.close();
-  clearInterval(statsTimer);
+  stopReporting?.();
   session = new Session(sig!, hostId, video, (s) => {
     if (s === "connected") {
       ui.hidden = true;
@@ -55,6 +55,7 @@ function startSession(hostId: string) {
     }
   });
   session.start();
+  stopReporting = session.startReporting();
 }
 
 function onMsg(m: ServerToCar) {
@@ -71,7 +72,7 @@ function onMsg(m: ServerToCar) {
       break;
     }
     case "host_online": startSession(m.host_id); break;
-    case "host_offline": session?.close(); video.hidden = true; show("<p>Your PC went offline.</p>"); break;
+    case "host_offline": stopReporting?.(); session?.close(); video.hidden = true; show("<p>Your PC went offline.</p>"); break;
     case "signal": session?.onSignal(m.payload); break;
   }
 }

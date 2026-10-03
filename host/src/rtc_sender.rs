@@ -5,6 +5,7 @@
 //! candidates are still accepted.
 
 use crate::{
+    adaptive::{Adaptive, ClientStats, Limits},
     agent::SessionHandler,
     capture::Capture,
     display::{DisplayBackend, Mode},
@@ -144,6 +145,7 @@ impl Interceptor for KeyframeForwarder {
 }
 
 struct Live {
+    adaptive: Adaptive,
     ctl: mpsc::UnboundedSender<Ctl>,
     pc: Arc<dyn PeerConnection>,
     stop: Arc<AtomicBool>,
@@ -162,13 +164,20 @@ pub struct WebRtcHandler<D: DisplayBackend> {
     viewport: HashMap<String, Mode>,
     live: HashMap<String, Live>,
     pub bitrate_kbps: u32,
+    /// Bounds for adaptive bitrate; the starting bitrate is clamped into them.
+    pub limits: Limits,
     /// Overrides the address to bind UDP on (default: `local_ip()`).
     pub bind_ip: Option<String>,
 }
 
 impl<D: DisplayBackend> WebRtcHandler<D> {
     pub fn new(display: D, media: Arc<dyn MediaFactory>) -> Self {
-        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), bitrate_kbps: 12_000, bind_ip: None }
+        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), bitrate_kbps: 12_000, limits: Limits::default(), bind_ip: None }
+    }
+
+    /// Current adaptive target for a car's live session (kbps).
+    pub fn bitrate_of(&self, car_id: &str) -> Option<u32> {
+        self.live.get(car_id).map(|l| l.adaptive.kbps())
     }
 
     async fn answer_offer(&mut self, car_id: &str, sdp: String) -> Result<Value, String> {
@@ -281,7 +290,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
             }
         });
 
-        self.live.insert(car_id.to_string(), Live { pc, stop, ctl: ctl_tx });
+        self.live.insert(car_id.to_string(), Live { pc, stop, ctl: ctl_tx, adaptive: Adaptive::new(bitrate, mode.refresh_hz, self.limits) });
         Ok(json!({ "kind": "answer", "sdp": local.sdp }))
     }
 }
@@ -353,9 +362,19 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
                     }
                 }
             }
+            Some("stats") => {
+                if let (Ok(s), Some(live)) = (serde_json::from_value::<ClientStats>(payload.clone()), self.live.get_mut(car_id)) {
+                    if let Some(k) = live.adaptive.update(Instant::now(), &s) {
+                        info!(kbps = k, loss = s.loss_pct, decode_ms = s.decode_ms, fps = s.fps, "adaptive bitrate");
+                        let _ = live.ctl.send(Ctl::Bitrate(k));
+                    }
+                }
+            }
             Some("bitrate") => {
-                if let (Some(k), Some(live)) = (payload.get("kbps").and_then(Value::as_u64), self.live.get(car_id)) {
-                    let _ = live.ctl.send(Ctl::Bitrate(k.min(u32::MAX as u64) as u32));
+                if let (Some(k), Some(live)) = (payload.get("kbps").and_then(Value::as_u64), self.live.get_mut(car_id)) {
+                    live.adaptive.set_kbps(k.min(u32::MAX as u64) as u32);
+                    let k = live.adaptive.kbps();
+                    let _ = live.ctl.send(Ctl::Bitrate(k));
                 }
             }
             Some("keyframe") => {
