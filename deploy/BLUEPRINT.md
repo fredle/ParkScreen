@@ -78,6 +78,32 @@ federated credential must trust the repo's `release` environment.
 - If the repo is renamed or transferred, the WIF condition casing must match the token.
 - `firebase-tools` deploy hosting needs `firebasehosting.admin` and the sites to exist first.
 - Firestore location is permanent per project; reuse the project's existing database.
+- **Velopack hooks.** The installer runs the app as `<exe> --veloapp-install <ver>` (also
+  `-updated`, `-obsolete`, `-uninstall`) and waits 30 s for it to exit. A headless agent that
+  ignores the flag just runs, the hook is killed, and the install "succeeds" after a 30-60 s
+  hang with an error in `%LOCALAPPDATA%elopackelopack.log`. Call
+  `velopack::VelopackApp::build().run()` (or the C# equivalent) first thing in `main`, and exit
+  immediately for any `--veloapp-*` argument.
+- **Auto-update is not free.** Publishing the feed does nothing until the app reads it: add the
+  Velopack `UpdateManager` with an `HttpSource` on the feed URL, check shortly after start and
+  every few hours, download, then restart. For a streaming app apply only when idle. Test a real
+  upgrade (install N, release N+1, watch the log) before calling it done.
+- **Upgrading by running a newer Setup.exe over an installed copy can hang.** Uninstall first
+  (`Update.exe --uninstall --silent`) in manual testing.
+- **Queue ordering on authenticated sockets.** Do not flush queued outbound messages before the
+  server's `Ready`; a `PairStart` sent ahead of `Hello` was rejected and the code never printed.
+  Gate the outbound branch of the select loop on `ready`.
+- **Tag-built binaries have no baked server URL unless the variable is set first.** Set
+  `<APP>_SERVER_URL` before the first tag; a local `cargo build` falls back to localhost, use the
+  run-time override to point it at production when testing.
+- **Verify, don't assume:** check the installer with `Get-AuthenticodeSignature` (Status `Valid`,
+  expected subject, timestamp), and read `releases.win.json` on the feed.
+- **Watching runs:** `gh run watch` right after a tag can attach to the previous run; take the id
+  from `gh run list --workflow <name>` after the new run appears. GitHub API 504s happen; retry.
+- **Microsoft Store (EXE/MSI app type):** needs a signed installer at a versioned, immutable
+  HTTPS URL with a silent switch (Velopack `--silent`), a privacy policy URL, listing text,
+  screenshots (at least 1366x768) and an age rating. Publish a copy at
+  `Releases/v<version>/<Setup>.exe` so the URL keeps serving the certified binary.
 
 ## Prompt (copy, fill placeholders, paste)
 
