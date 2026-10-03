@@ -19,14 +19,15 @@ shows it.
 - The Tesla browser shows that monitor full-screen with less than about 100 ms
   of glass-to-glass latency on a good LAN, at 30–60 fps.
 - Touch on the Tesla screen controls the PC (tap, drag, scroll).
-- Setup takes no more than one installer on the PC and one URL on the car.
+- Setup takes no more than one installer on the PC and one bookmark on the car:
+  **`https://parkscreen.leatham.net`**.
 
 **Non-goals (v1)**
 - macOS/Linux hosts. The architecture allows them later.
 - Audio in the MVP. It moves to Phase 3 (§7.1).
 - Use while driving.
-- Streaming over the internet when the car and PC are on different networks.
-  This is a v2 cloud relay feature (§6.3).
+- Streaming when the car and PC are on different networks. This needs a TURN
+  relay and is a Phase 4 feature (§6.3).
 
 ---
 
@@ -53,13 +54,48 @@ shows it.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-There are three deliverables:
+### 2.1 Network path
+
+The web client and signalling server are hosted on **our own VM behind a
+Cloudflare Tunnel** at `parkscreen.leatham.net`. The VM only brokers the
+connection. **Video and touch go peer-to-peer over the LAN** through WebRTC,
+and never through the VM or Cloudflare.
+
+```
+                 ┌──────── VM (no inbound ports open) ─────────┐
+                 │  cloudflared ──▶ parkscreen-server :8080    │
+                 │                  (Rust/axum: static client, │
+                 │                   WSS signalling, pairing)  │
+                 └───────▲───────────────────────────▲─────────┘
+                         │ Cloudflare edge, TLS for parkscreen.leatham.net
+          outbound WSS   │                           │  HTTPS + WSS
+          (signalling)   │                           │  (page + signalling)
+┌──── Windows PC ────────┴─────┐               ┌─────┴──────── Tesla ───────┐
+│ ParkScreen IDD ⇄ Host Agent  │◀═ WebRTC ════▶│ Tesla browser              │
+│ capture · H.264 · input      │  video ▶      │ full-screen <video>        │
+└──────────────────────────────┘  ◀ touch      └────────────────────────────┘
+                                  (P2P, LAN, DTLS-SRTP)
+```
+
+This has several benefits:
+- **Valid HTTPS with nothing to configure on the PC**: Cloudflare terminates
+  TLS with its edge certificate for `*.leatham.net`. The page is a secure
+  context, so every browser API is available (including WebCodecs later).
+- **The PC needs no inbound ports.** The host agent dials *out* to the VM
+  over WSS. That removes the firewall rule and the per-PC URL from v1.
+- **One URL for every car and every PC.** Users bookmark it once, and Tesla
+  syncs bookmarks across cars.
+- **Low VM load.** Signalling is a few KB per session, so a small VM (1 vCPU,
+  1 GB RAM) is enough.
+
+There are four deliverables:
 
 | Component | Language / stack | Location in repo |
 |---|---|---|
 | Virtual display driver | C++ / UMDF 2 / IddCx | `driver/` |
 | Host agent + tray app | Rust (`windows` crate), Tauri for the UI | `host/` |
 | Web client | TypeScript, Vite, no framework (keeps it light for the car's CPU) | `web/` |
+| Signalling server + deployment | Rust (axum), Docker Compose with `cloudflared` | `server/`, `deploy/` |
 
 ---
 
@@ -79,7 +115,7 @@ the architecture.
 | A3 | WebRTC receive also works on **Intel Atom** cars, but decoding is weaker. Camera and mic features are Ryzen-only. | Existing phone and laptop mirroring products (TeslaStream, CrankWheel, Tesla Display) stream to the car browser over WebRTC; 2026.26 camera/mic is limited to Ryzen. | Intel cars get a **720p30 default** preset. We never rely on camera or mic. |
 | A4 | The **Fullscreen API** works on a `<video>` element. | 2026.26 added full-screen video to the browser. | Render into `<video>` and call `requestFullscreen()` to use the whole panel, with no browser chrome. |
 | A5 | `<video>` playback is **blocked while the car is in gear** and allowed in Park. | Long-standing Tesla policy. | ParkScreen is Park-only. We use a normal `<video>` element and do **not** use canvas tricks to get around the lockout. |
-| A6 | `RTCPeerConnection` works on plain `http://` pages. Camera and mic, WebCodecs and some other APIs need HTTPS. | Chromium platform rules. | v1 can run from `http://<pc-ip>` on the LAN with no certificates. HTTPS becomes a Phase 3 polish item, not a blocker. |
+| A6 | `RTCPeerConnection` works on plain `http://` pages. Camera and mic, WebCodecs and some other APIs need HTTPS. | Chromium platform rules. | The primary URL is HTTPS through the Cloudflare Tunnel, so every API is available. The offline `http://<pc-ip>` fallback still works for WebRTC. |
 | A7 | DRM (EME) is irrelevant. | We stream our own non-DRM video. | None. |
 
 ### 3.2 Target devices
@@ -187,9 +223,9 @@ A Rust process with a tray icon (Tauri), split into modules:
 | `display` | `DisplayBackend` trait; `ParkScreenIdd` and `ThirdPartyVdd` implementations; plug/unplug; set modes |
 | `capture` | WGC capture of the virtual monitor's `HMONITOR`; dirty-rect and "no change" detection; cursor shape and position |
 | `encode` | **Media Foundation H.264 hardware MFT** (NVENC / Quick Sync / AMF are all exposed through MF), and a software fallback (openh264). Also a JPEG encoder for the fallback transport. |
-| `transport` | HTTP + WS signalling server (axum) on `:8765`; WebRTC sender (`webrtc-rs`) with H.264 track and data channels; JPEG/WS fallback |
+| `transport` | Outbound WSS client to `wss://parkscreen.leatham.net/ws/host` (with reconnect and backoff); WebRTC sender (`webrtc-rs`) with H.264 track and data channels; local HTTP/WS server on `:8765` for the offline and JPEG fallbacks (§6.2, §7.1) |
 | `input` | Turns client touch and pointer events into `InjectSyntheticPointerInput` (real touch) or `SendInput` (mouse mode), mapped to the virtual monitor's desktop coordinates |
-| `pairing` | Device pairing, tokens, certificate management (§6) |
+| `pairing` | Host identity key, pairing codes, the allow-list of paired cars (§6.4) |
 | `ui` | Tray menu: status, the connected car, resolution, quality preset, "disconnect", and the URL/PIN to type in the car |
 
 ### 5.1 Encoder settings (low latency)
@@ -221,41 +257,133 @@ second. The host changes bitrate, fps and (as a last resort) resolution scale.
 3. **Laptop as hotspot**: the Windows Mobile Hotspot, with the car joining the
    laptop. This works without any other network, which is great for laptops
    in the car. The host agent can offer to turn it on.
-4. **Different networks**: needs the cloud relay (v2, §6.3).
+4. **Different networks**: needs a TURN relay (Phase 4, §6.3).
+
+In every case **the car needs internet access** to load the page and reach
+the signalling server. Teslas have this through premium connectivity or
+Wi-Fi. Only the media has to stay local.
 
 ### 6.2 How the car reaches the PC
 
-Because WebRTC works on plain HTTP pages (A6), v1 needs no certificates:
+1. The host agent starts and opens `wss://parkscreen.leatham.net/ws/host`,
+   then authenticates with its host key (§6.4). The server marks the host
+   online.
+2. The car opens `https://parkscreen.leatham.net`. The page loads from the
+   VM (cached by a service worker after the first visit) and opens
+   `wss://…/ws/car`. It then authenticates with its paired-car token, or
+   enters a pairing code.
+3. The server relays the SDP offer and answer and the ICE candidates between
+   the two sockets. That is all the server does.
+4. WebRTC ICE finds the direct LAN path, and media flows P2P. After that, the
+   VM could go away and the session would continue.
 
-- **v1 (LAN, zero infrastructure):** the host agent serves the client at
-  `http://<pc-lan-ip>:8765`. Signalling (SDP and ICE) runs over `ws://` on the
-  same port, then media flows over WebRTC directly on the LAN. The tray app
-  shows the URL, and the user bookmarks it once in the car (bookmarks sync
-  across cars since 2026.26). We use a fixed port and the PC's hostname where
-  mDNS resolves, so a changed DHCP address doesn't break the bookmark.
-- **Phase 3 (nice URL plus HTTPS):** the car opens `https://parkscreen.app`, a
-  static CDN page. Signalling goes through our small WSS backend, and media is
-  still **P2P over the LAN** through WebRTC ICE. Opening WebRTC to a LAN peer
-  from an HTTPS page is not mixed content. This gives one memorable URL with
-  no per-PC certificates, and it also opens the way to the cloud relay.
-- **No `*.parkscreen.direct` wildcard certificate service.** We dropped this
-  from the plan, because WebRTC removes the need for it.
+**ICE details**
+- **STUN:** `stun:stun.cloudflare.com:3478` (free). It is only needed to give
+  server-reflexive candidates for the hotspot and different-network cases.
+- **mDNS candidates:** Chromium hides the car's LAN IP behind a random
+  `*.local` name (it hasn't granted camera permission). The host agent
+  publishes *real* host candidates and enables mDNS query mode in `webrtc-rs`.
+  Either side's real address is enough for ICE to connect, because the other
+  side is learned as a peer-reflexive candidate.
+- We add ICE-TCP host candidates for networks that block UDP between clients.
 
-### 6.3 Cloud relay (v2)
-- Signalling over WSS through our backend, with WebRTC media P2P when
-  possible and TURN when not. This only applies if Phase 0 shows that WebRTC
-  works in the Tesla browser.
-- Costs money (TURN bandwidth), so it would probably be a paid tier.
+**Offline fallback (no internet):** the host agent also serves the client at
+`http://<pc-lan-ip>:8765` with a built-in local signalling endpoint. This
+covers a laptop acting as a hotspot with no internet upstream. It works
+because WebRTC doesn't need HTTPS (A6). This is a fallback only, and not
+advertised in the UI by default.
+
+### 6.3 VM and Cloudflare Tunnel deployment
+
+**Hostname:** `parkscreen.leatham.net`. It is a first-level subdomain, so
+Cloudflare's free Universal SSL certificate covers it. We don't need an
+origin certificate because `cloudflared` connects outbound from the VM.
+
+**`deploy/docker-compose.yml`** (on the VM):
+```yaml
+services:
+  server:
+    image: ghcr.io/fredle/parkscreen-server:latest
+    restart: unless-stopped
+    environment:
+      PUBLIC_ORIGIN: https://parkscreen.leatham.net
+      DATABASE_URL: sqlite:///data/parkscreen.db
+    volumes: [ "./data:/data" ]
+    expose: [ "8080" ]          # not published to the host
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN}   # from the Zero Trust dashboard; keep in .env, never commit
+    depends_on: [ server ]
+```
+Create the tunnel in the Cloudflare Zero Trust dashboard (Networks →
+Tunnels). Add the public hostname `parkscreen.leatham.net` → service
+`http://server:8080`. Cloudflare creates the proxied DNS record
+automatically.
+
+**Cloudflare settings**
+- SSL/TLS: "Always Use HTTPS" on, and minimum TLS 1.2. The origin mode
+  doesn't matter, because the tunnel is already encrypted.
+- **WebSockets:** on (the default). The Cloudflare proxy closes idle
+  WebSockets after about 100 s, so the client and the host agent send a ping
+  every 30 s and reconnect with backoff.
+- WAF **rate-limiting rule** on `/api/pair*`: 10 requests per minute per IP.
+  This stops anyone brute-forcing pairing codes.
+- Caching: cache `/assets/*` (hashed filenames, immutable), and bypass the
+  cache for `/`, `/ws/*` and `/api/*`.
+- **Cloudflare Access is optional.** Don't put Access in front of `/ws/host`,
+  because the host agent can't do the login flow. Our own token auth (§6.4)
+  protects both sockets. Access *can* protect a future `/admin` page.
+
+**`parkscreen-server` (Rust, axum, about 1–2k lines)**
+- `GET /` and `/assets/*` serve the built web client (embedded in the binary
+  with `rust-embed`).
+- `GET /ws/host` and `/ws/car` are the WebSocket endpoints. They route
+  messages between sockets by `host_id`, and the in-memory room state is
+  rebuilt when hosts reconnect.
+- `POST /api/pair/start` (called by the host) and `/api/pair/claim` (called
+  by the car).
+- SQLite stores host public keys, paired-car tokens (hashed) and revocations.
+  A single instance is enough for our scale. Back up `./data` nightly.
+- It shares a `protocol` crate with the host agent. TypeScript types for the
+  web client are generated from it with `ts-rs`, so all three components
+  agree on the message format.
+
+**CI/CD:** a GitHub Action builds the web client and the server, pushes
+`ghcr.io/fredle/parkscreen-server` on every push to `main`, and deploys over
+SSH (`docker compose pull && docker compose up -d`). Or use Watchtower on the
+VM. `TUNNEL_TOKEN` and the SSH key live in GitHub/VM secrets only.
+
+**TURN for different networks (Phase 4):** a Cloudflare Tunnel only carries
+HTTP/WebSocket, so it can't relay WebRTC media. Options:
+**Cloudflare Realtime TURN** (managed, pay per GB, with a free monthly
+allowance), or `coturn` on the same VM with UDP 3478 and a port range opened
+directly, not through the tunnel. The server hands out short-lived TURN
+credentials per session.
 
 ### 6.4 Pairing and auth
-- The tray app shows a **6-digit code**. In v1 the user opens the LAN URL on the car;
-  in Phase 3 they open `parkscreen.app`. Either way they enter the code. (A QR code does not help
-  because the car cannot scan it.)
-- Pairing exchanges a long-lived device token, stored in the car browser's
-  `localStorage` (and as a cookie), so later visits connect without a code.
-- Every WS/WebRTC session is authenticated with that token. The host keeps an
-  allow-list of paired cars, which it can revoke from the tray.
-- Input injection is off until the user turns it on per paired device. This
+- **Host identity:** on first run the host agent generates an Ed25519 key
+  pair and stores it with DPAPI. It registers the public key with the server,
+  and authenticates each `/ws/host` connection by signing a server nonce.
+- **Pairing a car:** the user clicks "Pair a car" in the tray. The host
+  requests a **6-digit code**, valid for 5 minutes and single-use. The user
+  opens `parkscreen.leatham.net` in the car and types the code. The server
+  issues the car a random 256-bit **car token**, stored in a long-lived
+  `HttpOnly; Secure; SameSite=Strict` cookie (and in `localStorage` as a
+  backup), and links it to that host. (A QR code does not help because the
+  car cannot scan it.)
+- **Later visits:** the car's token automatically connects it to its paired
+  host(s). If several hosts are online, the car shows a picker.
+- **Defence in depth:** the server only brokers sessions. The host agent
+  also checks the car token's fingerprint against its own allow-list before
+  answering an offer, so a compromised VM can't attach an unknown car. Hosts
+  can revoke cars from the tray.
+- **The VM never sees screen content.** Media and input are end-to-end
+  DTLS-encrypted between the PC and the car. The host agent checks the DTLS
+  fingerprint it receives in the relayed SDP.
+- Input injection is off until the user turns it on per paired car. This
   matters because the car can control the PC.
 
 ---
@@ -267,13 +395,18 @@ Because WebRTC works on plain HTTP pages (A6), v1 needs no certificates:
 | Rank | Transport | Used on | Decode |
 |---|---|---|---|
 | 1 | **WebRTC**: H.264 Constrained Baseline video track, plus an unreliable data channel for pointer and cursor, and a reliable one for control | All cars (A2, A3) | `<video>`, hardware decode, full-screen |
-| 2 | **JPEG dirty tiles over WebSocket** | Only if WebRTC fails to connect (old firmware, or a network blocking UDP) | `createImageBitmap` → `<canvas>` |
+| 2 | **JPEG dirty tiles over a plain WebSocket on the LAN** | Only if WebRTC fails to connect (old firmware, or a network blocking UDP). The hosted page can't open `ws://` to a LAN IP (mixed content), so it offers a button that switches to the PC's local page `http://<pc-ip>:8765` (the address is learned through signalling) | `createImageBitmap` → `<canvas>` |
 
 We have dropped MSE and WebCodecs from v1. WebRTC covers the target cars and
 already gives us jitter buffering, congestion control (via the
 Transport-CC/GCC algorithm in `webrtc-rs`), NACK and PLI keyframe requests for
-free. WebCodecs over WSS stays a **Phase 4 experiment** for lower latency on
-Ryzen cars (it needs HTTPS, so it depends on Phase 3).
+free. **WebCodecs fed from a WebRTC data channel** stays a **Phase 4
+experiment** for lower latency on Ryzen cars. The hosted page is HTTPS, so
+the API is available, and the stream stays P2P.
+
+**Video never goes through the VM or the Cloudflare Tunnel.** That keeps
+the VM cheap, keeps latency low, and keeps us within Cloudflare's terms for
+proxied traffic.
 
 Low-latency WebRTC tuning:
 - Set `playoutDelayHint`/`jitterBufferTarget = 0` on the receiver.
@@ -313,29 +446,33 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 
 ## 8. Roadmap
 
-### Phase 0: Validate assumptions and signing (1 week)
-- [ ] `web/probe`: one page that checks A1–A6 on a real car (user agent,
-      `RTCPeerConnection` with H.264 in `getCapabilities`, Fullscreen API on
-      `<video>`, panel size and DPR). It plays a 60-second WebRTC loopback
-      stream from a test host, logs decode fps and dropped frames, and
-      uploads a report.
+### Phase 0: Validate assumptions, signing and hosting (1 week)
+- [ ] Bring up the VM: Docker, a Cloudflare Tunnel, and
+      `parkscreen.leatham.net` serving a placeholder page over HTTPS.
+- [ ] `web/probe` deployed there. It checks A1–A6 on a real car (user agent,
+      H.264 in `RTCRtpReceiver.getCapabilities`, Fullscreen API on `<video>`,
+      panel size and DPR, WebSocket survival through Cloudflare over 10
+      minutes). It plays a 60-second WebRTC test stream from a PC on the same
+      LAN, logs decode fps and dropped frames, and posts a report.
 - [ ] Run it on at least one Ryzen car (and an Intel car if available), in
       Park.
-- [ ] **Signing spike:** sign a build of Microsoft's `IddSampleDriver` with
-      Azure Trusted Signing and install it on a Windows 11 VM with Secure Boot,
-      HVCI and Smart App Control on (§4.4). Decide on Trusted Signing,
-      SignPath or an EV certificate.
+- [ ] **Signing spike:** sign Microsoft's `IddSampleDriver` with Azure Trusted
+      Signing and install it on a Windows 11 VM with Secure Boot, HVCI and
+      Smart App Control on (§4.4).
 
-### Phase 1: MVP over LAN (4–5 weeks)
+### Phase 1: MVP (4–5 weeks)
+- [ ] `server/`: axum signalling and pairing, SQLite, embedded web client,
+      Docker image, GitHub Action → GHCR → VM deploy.
 - [ ] Host: `ThirdPartyVdd` backend, WGC capture, MF H.264 hardware encode,
-      `webrtc-rs` sender, HTTP and WS signalling server on `:8765`.
-- [ ] Web: WebRTC player, full-screen button, stats overlay, JPEG fallback.
+      `webrtc-rs` sender, outbound WSS to the server.
+- [ ] Web: WebRTC player, full-screen button, stats overlay, pairing screen,
+      JPEG fallback.
 - [ ] Viewport mode negotiation.
-- [ ] PIN pairing.
 - [ ] Sign the host binaries and installer with Azure Trusted Signing in CI.
-- **Exit criteria:** extend a desktop to a Ryzen Model 3/Y at
-  1920×1200, 60 fps, under 100 ms latency, stable for 1 hour. On Intel,
-  720p30 must be usable.
+- **Exit criteria:** pair a Ryzen Model 3/Y through
+  `parkscreen.leatham.net`, and extend a desktop at 1920×1200, 60 fps, under
+  100 ms latency over the LAN, stable for 1 hour. On Intel, 720p30 must be
+  usable.
 
 ### Phase 2: Own driver plus input (4–6 weeks)
 - [ ] ParkScreen IddCx driver (Stage A): dynamic modes, plug/unplug, IOCTLs,
@@ -344,15 +481,15 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 - [ ] Hardware cursor channel.
 
 ### Phase 3: Product polish (3–4 weeks)
-- [ ] `parkscreen.app` page and WSS signalling backend (media stays P2P on the
-      LAN).
 - [ ] Audio track.
+- [ ] Offline local fallback (§6.2).
 - [ ] Installer, auto-update, tray UI, quality presets, laptop-hotspot helper.
+- [ ] Service worker so the page loads instantly; multi-host picker.
 
 ### Phase 4: Performance and v2
 - [ ] Driver Stage B (shared-texture frames, dirty rectangles).
-- [ ] TURN relay for when the car and PC are on different networks.
-- [ ] WebCodecs-over-WSS experiment; HEVC/AV1 if the car's decoder supports
+- [ ] TURN for different networks (Cloudflare Realtime TURN or coturn).
+- [ ] WebCodecs-over-data-channel experiment; HEVC/AV1 if the car's decoder supports
       them in WebRTC.
 - [ ] Multiple monitors.
 
@@ -367,7 +504,10 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 | PnP rejects a Trusted Signing signature on the driver | Can't ship our own driver yet | Phase 0 spike; SignPath or EV as a fallback; ship with the third-party driver backend until then |
 | Phone hotspot client isolation, or UDP blocked | WebRTC can't connect | ICE over TCP host candidates; JPEG/WS fallback; recommend laptop-hotspot mode |
 | Weak decode on Intel Atom cars | Stutter | 720p30 default; adaptive bitrate through WebRTC congestion control |
-| Remote input is a security surface | PC takeover | Paired-token auth, input off by default, LAN-only by default. WebRTC media and data channels are always DTLS-encrypted; v1 signalling is plain WS on the LAN (only SDP and the token), and it moves to WSS in Phase 3 |
+| VM or Cloudflare outage | Can't start new sessions; running sessions continue (P2P) | Offline local fallback (§6.2); `restart: unless-stopped`; uptime check on `/healthz` |
+| Cloudflare closes idle WebSockets (~100 s) | Signalling drops | 30 s pings and auto-reconnect; sessions don't depend on the socket once connected |
+| Pairing code brute force, or token theft | Unauthorised car attaches | Short-lived single-use codes; WAF rate limit; hashed tokens; host-side allow-list; DTLS fingerprint check |
+| Remote input is a security surface | PC takeover | Paired-token auth, input off by default, Media stays on the LAN. WebRTC media and data channels are always DTLS-encrypted end to end; signalling is WSS through Cloudflare |
 | Use while driving | Safety / legal | Built for Park. We use a standard `<video>` element, so Tesla's driving lockout applies as designed. We do **not** use canvas tricks to get around it. The JPEG fallback is only used when WebRTC fails, and it stops while the page is hidden or video is blocked. Clear in-app warnings. |
 
 ---
@@ -390,7 +530,9 @@ ParkScreen/
 ├── web/
 │   ├── probe/         # Phase 0 capability probe
 │   └── client/        # player
-├── backend/           # parkscreen.app signalling (Phase 3)
+├── server/            # parkscreen-server: signalling, pairing, serves web client
+├── protocol/          # shared message types (Rust → TS via ts-rs)
+├── deploy/            # docker-compose.yml, cloudflared notes, CI deploy script
 └── installer/         # WiX / MSIX
 ```
 
