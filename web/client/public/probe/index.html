@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ParkScreen probe</title>
+<style>body{font:18px system-ui;background:#111;color:#eee;padding:24px}td{padding:4px 16px 4px 0}.ok{color:#6c6}.no{color:#e66}</style></head>
+<body><h1>ParkScreen capability probe (run in Park)</h1><table id="t"></table><video id="v" muted playsinline style="width:320px"></video>
+<script>
+const rows = [];
+const add = (k, ok, v) => { rows.push([k, ok, v]); document.getElementById("t").innerHTML = rows.map(([k, ok, v]) => `<tr><td>${k}</td><td class="${ok ? "ok" : "no"}">${ok ? "yes" : "NO"}</td><td>${v ?? ""}</td></tr>`).join(""); };
+add("User agent (A1)", true, navigator.userAgent);
+add("Secure context (A6)", isSecureContext, location.protocol);
+add("RTCPeerConnection (A2)", !!window.RTCPeerConnection);
+const c = window.RTCRtpReceiver?.getCapabilities?.("video");
+add("H.264 receive (A2)", !!c?.codecs.some(x => /h264/i.test(x.mimeType)), c?.codecs.filter(x => /h264/i.test(x.mimeType)).map(x => x.sdpFmtpLine).join(" | "));
+add("Fullscreen on <video> (A4)", !!document.getElementById("v").requestFullscreen, "");
+add("Panel size × DPR", true, `${screen.width}×${screen.height} @${devicePixelRatio} (inner ${innerWidth}×${innerHeight})`);
+add("WebCodecs VideoDecoder", !!window.VideoDecoder);
+add("Wake Lock", !!navigator.wakeLock);
+add("playoutDelayHint", c ? "playoutDelayHint" in RTCRtpReceiver.prototype : false);
+const proto = location.protocol === "https:" ? "wss" : "ws";
+const start = Date.now(); const ws = new WebSocket(`${proto}://${location.host}/ws/car`);
+ws.onopen = () => { add("WebSocket opens", true, ""); setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ type: "ping" })), 30000); };
+ws.onclose = () => add("WebSocket survived", false, `closed after ${Math.round((Date.now() - start) / 1000)} s`);
+setTimeout(() => ws.readyState === 1 && add("WebSocket survived 10 min (Cloudflare)", true, ""), 600000);
+</script></body></html>
