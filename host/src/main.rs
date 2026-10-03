@@ -1,7 +1,8 @@
 use parkscreen_host::{
-    agent::{Agent, ViewportOnly},
+    agent::Agent,
     allowlist::AllowList,
     display::NullDisplay,
+    rtc_sender::{SoftwareMedia, WebRtcHandler},
     identity::Identity,
     signalling,
 };
@@ -30,7 +31,7 @@ async fn main() {
     let mut agent = Agent {
         tx: tx.clone(),
         allow,
-        handler: ViewportOnly { display: NullDisplay::default() },
+        handler: WebRtcHandler::new(NullDisplay::default(), std::sync::Arc::new(SoftwareMedia)),
         on_pair_code: Box::new(|code| println!("Pairing code (valid 5 min): {code}")),
     };
     if std::env::args().any(|a| a == "--pair") {

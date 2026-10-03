@@ -9,4 +9,5 @@ pub mod display;
 pub mod encode;
 pub mod identity;
 pub mod input;
+pub mod rtc_sender;
 pub mod signalling;

@@ -16,6 +16,10 @@ rand = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
+webrtc = "0.21"
+rtc = "0.21"
+openh264 = "0.9"
+bytes = "1"
 
 [dev-dependencies]
 parkscreen-server = { path = "../server" }
