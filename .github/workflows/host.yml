@@ -1,0 +1,25 @@
+name: host
+on:
+  push:
+    paths: [ "host/**", ".github/workflows/host.yml" ]
+  pull_request:
+    paths: [ "host/**", ".github/workflows/host.yml" ]
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: host }
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parkscreen-host
+          path: host/target/release/parkscreen-host.exe
