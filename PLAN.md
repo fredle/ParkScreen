@@ -24,10 +24,10 @@ shows it.
 
 **Non-goals (v1)**
 - macOS/Linux hosts. The architecture allows them later.
-- Audio in the MVP. It moves to Phase 3 (§7.1).
+- Audio in the MVP. It comes later (§7.1, §8).
 - Use while driving.
 - Streaming when the car and PC are on different networks. This needs a TURN
-  relay and is a Phase 4 feature (§6.3).
+  relay and comes later (§6.3, §8).
 
 ---
 
@@ -103,7 +103,7 @@ There are four deliverables:
 
 We stopped treating browser support as unknown. We design against the
 following assumptions, based on public information as of October 2026. A
-short check on a real car (Phase 0) confirms them, but it no longer decides
+short check on a real car (during W1, §8) confirms them, but it no longer decides
 the architecture.
 
 ### 3.1 Assumptions
@@ -180,7 +180,7 @@ Artifact Signing). Here is where it fits:
 | What | Signed with | Notes |
 |---|---|---|
 | Host agent `.exe`/`.dll`, Tauri app, installer (MSI/MSIX) | **Azure Trusted Signing** ✅ | The intended use: it builds SmartScreen reputation and avoids "unknown publisher" warnings. Run it in CI with `signtool` and the Trusted Signing dlib, or with the `azure/trusted-signing-action` GitHub Action. |
-| Driver binary (`ParkScreenIdd.dll`) and catalog (`.cat`) | **Azure Trusted Signing, to be tested in Phase 0** ⚠️ | See below. |
+| Driver binary (`ParkScreenIdd.dll`) and catalog (`.cat`) | **Azure Trusted Signing, to be tested in the W4 signing spike** ⚠️ | See below. |
 | Microsoft attestation signing through Partner Center | ❌ Not possible with Trusted Signing | Partner Center needs an **EV** certificate on the account. Microsoft has confirmed Trusted Signing is not EV and is not supported for this. |
 
 **Why the driver may still work with Trusted Signing:** ParkScreen's driver is
@@ -192,7 +192,7 @@ chains to a trusted root. This is how open-source IddCx drivers such as
 certificates chain to Microsoft's trusted "Identity Verification" root and are
 time-stamped, so:
 
-1. **Phase 0 spike:** sign the `.dll` and `.cat` with Trusted Signing, then
+1. **Signing spike (W4):** sign the `.dll` and `.cat` with Trusted Signing, then
    install with `pnputil /add-driver parkscreen.inf /install` on a clean
    Windows 11 24H2+ VM with Secure Boot, HVCI (memory integrity) and Smart App
    Control all on. Check that the device starts with no warnings, and test
@@ -221,7 +221,7 @@ A Rust process with a tray icon (Tauri), split into modules:
 | Module | Responsibility |
 |---|---|
 | `display` | `DisplayBackend` trait; `ParkScreenIdd` and `ThirdPartyVdd` implementations; plug/unplug; set modes |
-| `capture` | WGC capture of the virtual monitor's `HMONITOR`; dirty-rect and "no change" detection; cursor shape and position |
+| `capture` | **DXGI Desktop Duplication** of the virtual monitor first: it is synchronous and gives dirty rectangles and the pointer shape. Windows.Graphics.Capture comes later as an alternative. Includes "no change" detection and the cursor shape and position |
 | `encode` | **Media Foundation H.264 hardware MFT** (NVENC / Quick Sync / AMF are all exposed through MF), and a software fallback (openh264). Also a JPEG encoder for the fallback transport. |
 | `transport` | Outbound WSS client to `wss://parkscreen.leatham.net/ws/host` (with reconnect and backoff); WebRTC sender (`webrtc-rs`) with H.264 track and data channels; local HTTP/WS server on `:8765` for the offline and JPEG fallbacks (§6.2, §7.1) |
 | `input` | Turns client touch and pointer events into `InjectSyntheticPointerInput` (real touch) or `SendInput` (mouse mode), mapped to the virtual monitor's desktop coordinates |
@@ -245,6 +245,87 @@ A Rust process with a tray icon (Tauri), split into modules:
 The client reports decode time, dropped frames and its buffer level once per
 second. The host changes bitrate, fps and (as a last resort) resolution scale.
 
+### 5.3 Build plan for the Windows app (first milestone)
+
+The Windows app comes first. It works without the VM: the host agent serves
+its own test page and signalling at `http://<pc-ip>:8765`, so any browser on
+the LAN can connect, including the Tesla (WebRTC works on plain HTTP, A6).
+That local mode later becomes the offline fallback (§6.2), so none of this is
+throwaway work.
+
+**Libraries (checked against current crates.io, October 2026)**
+
+| Need | Crate | Notes |
+|---|---|---|
+| WebRTC | `webrtc` 0.21 plus `rtc` 0.21 (same version) | The new async layer over a sans-IO core. Its examples `play-from-disk-h26x` (sending H.264 samples) and `rtcp-processing` (receiving PLI/FIR) are the templates we follow. |
+| H.264 encoding (software) | `openh264` 0.9 | Built from source (`source` feature). Use `UsageType::ScreenContentRealTime`; `YUVBuffer::read_bgra8` converts BGRA to I420; `force_intra_frame()` for keyframes. It re-initialises automatically when the frame size changes. |
+| Windows APIs | `windows` 0.62 | Covers D3D11, DXGI, GDI display settings, DisplayConfig and SendInput. |
+| HTTP, WS signalling | `axum` 0.8 (`ws` feature), `tokio` | |
+| CLI, logging | `clap` 4, `tracing` | |
+
+**WebRTC wiring (webrtc 0.21)**
+- `MediaEngine::register_codec` registers H.264 only:
+  `packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1`,
+  PT 102. Then call `register_default_interceptors(Registry::new(), &mut media_engine)`.
+- Add a small `KeyframeRequestInterceptor` at `Slot::from(14_000)`, copied from
+  the `rtcp-processing` example. It tags PLI/FIR packets with
+  `Attribute::DeliverToApplication`, so they reach
+  `TrackLocal::poll()` → `TrackLocalEvent::OnRtcpPacket`. Without it,
+  keyframe requests never reach the application.
+- `PeerConnectionBuilder` with `.with_udp_addrs(vec!["0.0.0.0:<port>"])`. A
+  wildcard address expands to every interface's host candidates. Use a fixed
+  port (default 8766) so a Windows Firewall rule can name it.
+- `SettingEngineBuilder::with_multicast_dns_mode(MulticastDnsMode::QueryOnly)`
+  so the host can resolve the browser's `*.local` candidates.
+- Use `TrackLocalStaticSample` with `sample_writer(ssrc, pt).write_sample(&Sample{data, duration, ..})`.
+  Each encoded frame goes in as one Annex-B access unit (SPS and PPS
+  included on IDR frames); the library packetizes it into RTP.
+- Non-trickle signalling: the browser sends one offer
+  (`recvonly` video, plus its viewport size). The host answers after ICE
+  gathering completes. A new connection replaces the old one (one viewer at
+  a time).
+
+**Threads**
+- **Capture/encode thread** (a plain OS thread, because D3D and COM objects
+  are not `Send`). It loops on `AcquireNextFrame`, copies to a staging
+  texture, maps it, converts to I420 and encodes. It receives commands
+  (`ForceKeyframe`, `SetMode`, `Stop`) over a channel, and sends encoded
+  frames to the async side over a bounded channel of 2. If the channel is
+  full, the frame is dropped, so frames never queue up.
+- **Tokio runtime**: the axum server, the signalling socket, the
+  peer connection, one task writing samples and one task polling RTCP
+  (PLI → `ForceKeyframe`).
+- `DXGI_ERROR_ACCESS_LOST` (on a mode change, a UAC or lock screen, or a
+  full-screen app) → recreate the duplication and force a keyframe.
+
+**Milestone W1 deliverable:** `parkscreen-host.exe` (CLI, no tray yet):
+- `parkscreen-host list`: monitors with index, device name
+  (`\\.\DISPLAYn`), friendly name (from `QueryDisplayConfig`), resolution
+  and position.
+- `parkscreen-host set-mode --monitor 2 1920x1200@60`: calls
+  `ChangeDisplaySettingsExW`. The driver must already offer that mode;
+  Virtual Display Driver lets you add custom modes in its XML settings.
+- `parkscreen-host serve [--monitor <idx|name>] [--fps 60] [--bitrate 12M] [--match-viewport]`.
+  It auto-picks a monitor whose friendly name looks virtual (VDD, Virtual,
+  ParkScreen), and serves the player page.
+
+**Development and verification workflow**
+- The cloud dev container is Linux. Code is compiled there with
+  `cargo check`/`cargo build --target x86_64-pc-windows-gnu` (mingw-w64), so
+  Windows API usage is type-checked before each push.
+- **Source of truth:** a GitHub Actions workflow on `windows-latest` builds
+  with MSVC, runs `cargo clippy` and unit tests, and uploads
+  `parkscreen-host.exe` as an artifact.
+- Runtime testing happens on your Windows PC. Install Virtual Display Driver,
+  download the CI artifact, run `parkscreen-host serve`, then open the
+  printed URL in Chrome on another device, then in the Tesla.
+- Unit tests cover what doesn't need Windows: the signalling message
+  format, mode parsing, monitor-name matching, and H.264 NAL handling.
+
+**Not in W1:** touch input, our own driver, the tray UI, the installer,
+hardware encoding, cursor compositing (Desktop Duplication frames don't
+include the cursor, so W1 shows none), and audio.
+
 ---
 
 ## 6. Connectivity, security and pairing
@@ -257,7 +338,7 @@ second. The host changes bitrate, fps and (as a last resort) resolution scale.
 3. **Laptop as hotspot**: the Windows Mobile Hotspot, with the car joining the
    laptop. This works without any other network, which is great for laptops
    in the car. The host agent can offer to turn it on.
-4. **Different networks**: needs a TURN relay (Phase 4, §6.3).
+4. **Different networks**: needs a TURN relay (later, §8).
 
 In every case **the car needs internet access** to load the page and reach
 the signalling server. Teslas have this through premium connectivity or
@@ -356,7 +437,7 @@ automatically.
 SSH (`docker compose pull && docker compose up -d`). Or use Watchtower on the
 VM. `TUNNEL_TOKEN` and the SSH key live in GitHub/VM secrets only.
 
-**TURN for different networks (Phase 4):** a Cloudflare Tunnel only carries
+**TURN for different networks (later):** a Cloudflare Tunnel only carries
 HTTP/WebSocket, so it can't relay WebRTC media. Options:
 **Cloudflare Realtime TURN** (managed, pay per GB, with a free monthly
 allowance), or `coturn` on the same VM with UDP 3478 and a port range opened
@@ -400,7 +481,7 @@ credentials per session.
 We have dropped MSE and WebCodecs from v1. WebRTC covers the target cars and
 already gives us jitter buffering, congestion control (via the
 Transport-CC/GCC algorithm in `webrtc-rs`), NACK and PLI keyframe requests for
-free. **WebCodecs fed from a WebRTC data channel** stays a **Phase 4
+free. **WebCodecs fed from a WebRTC data channel** stays a **later
 experiment** for lower latency on Ryzen cars. The hosted page is HTTPS, so
 the API is available, and the stream stays P2P.
 
@@ -417,7 +498,7 @@ Low-latency WebRTC tuning:
 - The client tells the host to send at most `min(panel fps, 60)`.
 
 Audio: a WebRTC audio track (WASAPI loopback → Opus) is cheap to add, so we
-move it from non-goal to Phase 3.
+move it from non-goal to the later roadmap.
 
 ### 7.2 UI
 - Full-screen canvas or video, with a black letterbox if the aspect ratio
@@ -446,52 +527,61 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 
 ## 8. Roadmap
 
-### Phase 0: Validate assumptions, signing and hosting (1 week)
-- [ ] Bring up the VM: Docker, a Cloudflare Tunnel, and
-      `parkscreen.leatham.net` serving a placeholder page over HTTPS.
-- [ ] `web/probe` deployed there. It checks A1–A6 on a real car (user agent,
-      H.264 in `RTCRtpReceiver.getCapabilities`, Fullscreen API on `<video>`,
-      panel size and DPR, WebSocket survival through Cloudflare over 10
-      minutes). It plays a 60-second WebRTC test stream from a PC on the same
-      LAN, logs decode fps and dropped frames, and posts a report.
-- [ ] Run it on at least one Ryzen car (and an Intel car if available), in
-      Park.
-- [ ] **Signing spike:** sign Microsoft's `IddSampleDriver` with Azure Trusted
-      Signing and install it on a Windows 11 VM with Secure Boot, HVCI and
-      Smart App Control on (§4.4).
+**Windows app first.** The VM, the hosted page and pairing are deferred until
+the Windows app streams reliably. Until then, the host agent's local page is
+used both for development and for the Tesla checks.
 
-### Phase 1: MVP (4–5 weeks)
-- [ ] `server/`: axum signalling and pairing, SQLite, embedded web client,
-      Docker image, GitHub Action → GHCR → VM deploy.
-- [ ] Host: `ThirdPartyVdd` backend, WGC capture, MF H.264 hardware encode,
-      `webrtc-rs` sender, outbound WSS to the server.
-- [ ] Web: WebRTC player, full-screen button, stats overlay, pairing screen,
-      JPEG fallback.
-- [ ] Viewport mode negotiation.
-- [ ] Sign the host binaries and installer with Azure Trusted Signing in CI.
-- **Exit criteria:** pair a Ryzen Model 3/Y through
-  `parkscreen.leatham.net`, and extend a desktop at 1920×1200, 60 fps, under
-  100 ms latency over the LAN, stable for 1 hour. On Intel, 720p30 must be
-  usable.
+### W1: Host agent streams a virtual monitor (2–3 weeks)
+See §5.3.
+- [ ] Rust project `host/`, plus a GitHub Actions Windows build that produces
+      an `.exe` artifact.
+- [ ] Monitor enumeration and mode setting (`display`), with the
+      `ThirdPartyVdd`/existing-monitor backend.
+- [ ] Desktop Duplication capture (`capture`).
+- [ ] OpenH264 software encoder behind an `Encoder` trait (`encode`).
+- [ ] WebRTC sender with keyframe-on-PLI, plus local HTTP/WS signalling and
+      the embedded player page (`transport`).
+- **Exit criteria:** on your PC, extend the desktop to the virtual monitor
+  and watch it in Chrome on another device and in the Tesla (in Park) at
+  1920×1200, at least 30 fps, smooth for 30 minutes. This also covers most of
+  the browser checks from the old Phase 0 (WebRTC, H.264, full-screen, panel
+  size).
 
-### Phase 2: Own driver plus input (4–6 weeks)
-- [ ] ParkScreen IddCx driver (Stage A): dynamic modes, plug/unplug, IOCTLs,
-      signed per the Phase 0 decision.
-- [ ] Touch and mouse input over the data channel, and trackpad mode.
-- [ ] Hardware cursor channel.
+### W2: Hardware encoding, cursor, viewport matching (2–3 weeks)
+- [ ] Media Foundation hardware H.264 encoder (NVENC, Quick Sync, AMF), with
+      GPU BGRA→NV12 conversion using `ID3D11VideoProcessor`; OpenH264 stays as
+      the fallback.
+- [ ] Cursor compositing from the Desktop Duplication pointer shape.
+- [ ] `--match-viewport`: switch the monitor mode to the car's reported size.
+- [ ] Target: 60 fps at 1920×1200 with under 100 ms latency.
 
-### Phase 3: Product polish (3–4 weeks)
-- [ ] Audio track.
-- [ ] Offline local fallback (§6.2).
-- [ ] Installer, auto-update, tray UI, quality presets, laptop-hotspot helper.
-- [ ] Service worker so the page loads instantly; multi-host picker.
+### W3: Touch input (1–2 weeks)
+- [ ] WebRTC data channel with pointer events → `InjectSyntheticPointerInput`
+      / `SendInput`, mapped to the virtual monitor; trackpad mode; on-screen
+      keyboard text.
+- [ ] Input is opt-in (a CLI flag until the tray UI exists).
 
-### Phase 4: Performance and v2
+### W4: Our own driver and signing (4–6 weeks; the signing spike can start any time)
+- [ ] **Signing spike:** Azure Trusted Signing on Microsoft's
+      `IddSampleDriver` (§4.4). This decides Trusted Signing vs. SignPath vs.
+      EV.
+- [ ] ParkScreen IddCx driver (Stage A): dynamic modes, plug/unplug, IOCTLs;
+      `ParkScreenIdd` backend in the host agent.
+
+### W5: Windows app polish (2–3 weeks)
+- [ ] Tauri tray app, quality presets, start with Windows.
+- [ ] WiX installer (driver, agent, firewall rule), signed with Azure Trusted
+      Signing in CI; auto-update.
+
+### Then: hosting and pairing (previously Phase 0/1 server work)
+- [ ] VM, Cloudflare Tunnel, and `parkscreen-server` at
+      `parkscreen.leatham.net` (§6.3); pairing (§6.4); the host agent dials
+      out over WSS. The local page stays as the offline fallback.
+
+### Later: performance and v2
 - [ ] Driver Stage B (shared-texture frames, dirty rectangles).
-- [ ] TURN for different networks (Cloudflare Realtime TURN or coturn).
-- [ ] WebCodecs-over-data-channel experiment; HEVC/AV1 if the car's decoder supports
-      them in WebRTC.
-- [ ] Multiple monitors.
+- [ ] TURN for different networks; audio; multiple monitors; WebCodecs
+      experiment; HEVC/AV1 if the car supports them.
 
 ---
 
@@ -499,9 +589,9 @@ scale factor (e.g. 150%) so text is readable at arm's length.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| An assumption (A1–A6) is wrong on some cars | Lower quality or no WebRTC | Phase 0 probe; JPEG-over-WebSocket fallback |
+| An assumption (A1–A6) is wrong on some cars | Lower quality or no WebRTC | W1 testing in the car; JPEG-over-WebSocket fallback |
 | Firmware updates change browser behaviour | Breakage | Feature detection on every connect; telemetry on which transport is used |
-| PnP rejects a Trusted Signing signature on the driver | Can't ship our own driver yet | Phase 0 spike; SignPath or EV as a fallback; ship with the third-party driver backend until then |
+| PnP rejects a Trusted Signing signature on the driver | Can't ship our own driver yet | W4 signing spike; SignPath or EV as a fallback; ship with the third-party driver backend until then |
 | Phone hotspot client isolation, or UDP blocked | WebRTC can't connect | ICE over TCP host candidates; JPEG/WS fallback; recommend laptop-hotspot mode |
 | Weak decode on Intel Atom cars | Stutter | 720p30 default; adaptive bitrate through WebRTC congestion control |
 | VM or Cloudflare outage | Can't start new sessions; running sessions continue (P2P) | Offline local fallback (§6.2); `restart: unless-stopped`; uptime check on `/healthz` |
@@ -528,7 +618,6 @@ ParkScreen/
 │   ├── crates/input/
 │   └── app/           # Tauri tray app
 ├── web/
-│   ├── probe/         # Phase 0 capability probe
 │   └── client/        # player
 ├── server/            # parkscreen-server: signalling, pairing, serves web client
 ├── protocol/          # shared message types (Rust → TS via ts-rs)
@@ -538,7 +627,7 @@ ParkScreen/
 
 ## 11. Open questions
 1. Does full-screen `<video>` stay full-screen when the user touches it
-   (needed for touch input), or does the car's UI come back? (Phase 0.)
+   (needed for touch input), or does the car's UI come back? (Check in W1.)
 2. Should we support "mirror" mode (duplicating an existing monitor) as well
    as "extend"? It is cheap to add in the host because it is just capturing a
    different `HMONITOR`.
