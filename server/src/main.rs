@@ -47,7 +47,8 @@ async fn pair_claim(State(s): State<S>, Json(req): Json<PairClaimRequest>) -> Re
 
 async fn static_file(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
+    let path = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.to_string() };
+    let path = path.as_str();
     match Assets::get(path) {
         Some(f) => {
             let cache = if path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
