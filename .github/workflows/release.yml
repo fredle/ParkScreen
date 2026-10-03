@@ -110,9 +110,34 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "Releases\notes" | Out-Null
           Copy-Item notes.md "Releases\notes\${{ steps.version.outputs.version }}.md"
-          # Immutable, versioned installer URL for Microsoft Store certification.
-          New-Item -ItemType Directory -Force -Path "Releases\v${{ steps.version.outputs.version }}" | Out-Null
-          Copy-Item Releases\ParkScreen-win-Setup.exe "Releases\v${{ steps.version.outputs.version }}\ParkScreen-win-Setup.exe"
+
+      - name: Publish versioned Store installer
+        # The Microsoft Store needs a public, non-redirecting URL whose bytes never change for a
+        # given version (it hashes the package). ParkScreen-win-Setup.exe is overwritten every
+        # release, so keep a per-version copy under store/<version>/. A Firebase deploy replaces
+        # the whole site, so earlier copies are re-downloaded from the live site first; the
+        # newest 3 versions are kept. (Same step as Teeline.)
+        shell: pwsh
+        run: |
+          $base = "https://parkscreen-releases.web.app"
+          $version = "${{ steps.version.outputs.version }}"
+          $keep = 3
+          $prev = @()
+          try { $prev = @(Invoke-RestMethod "$base/store/versions.json" | ForEach-Object { $_ } | ForEach-Object { [string]$_ }) } catch { Write-Host "No store/versions.json yet." }
+          $versions = @($prev | Where-Object { $_ -ne $version })
+          $versions = @($versions + $version | Sort-Object { [version]$_ } -Descending | Select-Object -First $keep)
+          foreach ($v in $versions) {
+            $dir = "Releases/store/$v"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            if ($v -eq $version) {
+              Copy-Item "Releases/ParkScreen-win-Setup.exe" "$dir/ParkScreenSetup.exe"
+            } else {
+              try { Invoke-WebRequest "$base/store/$v/ParkScreenSetup.exe" -OutFile "$dir/ParkScreenSetup.exe" }
+              catch { Write-Warning "Could not re-fetch store/$v - dropping it from the manifest."; Remove-Item $dir -Recurse -Force; $versions = @($versions | Where-Object { $_ -ne $v }) }
+            }
+          }
+          ConvertTo-Json -InputObject @($versions) | Set-Content "Releases/store/versions.json"
+          Write-Host "Store package URL: $base/store/$version/ParkScreenSetup.exe"
 
       - name: GCP login (Workload Identity Federation)
         uses: google-github-actions/auth@v2
