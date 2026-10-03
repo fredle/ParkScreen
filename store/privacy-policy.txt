@@ -1,0 +1,23 @@
+ParkScreen privacy policy
+Last updated: 3 October 2026. Publisher: FBL Consulting Ltd. Contact: freddie@leatham.com
+
+What ParkScreen does
+ParkScreen is a Windows app that shares one of your own PC monitors with a web browser in your car. The browser in your car and the app on your PC connect directly to each other (peer to peer, WebRTC). The screen video and any touch input go straight between your two devices. They do not pass through our servers and are never recorded or stored by us.
+
+What we collect and store
+- A random host identifier and a public key generated on your PC when the app first runs. The matching private key stays on your PC.
+- A random token for each car browser you pair, and the time of pairing.
+- Temporary pairing codes (valid 5 minutes) and short signalling messages (connection set-up data) that our server relays so the two devices can find each other. These are held in memory and not logged.
+The host identifier, public key and pairing records are stored in Google Cloud Firestore (Google Cloud, operated for us in Europe) so that your paired car keeps working after the server restarts.
+
+What we do not collect
+No analytics, advertising identifiers, telemetry, crash reports, names, email addresses, location, contacts or screen contents. We do not sell or share data. The app checks https://parkscreen-releases.web.app for updates; that request reveals your IP address to our hosting provider (Google Firebase Hosting) as for any web request.
+
+Your choices
+Un-pair a car or remove the app at any time. To have your host identifier and pairings deleted, email freddie@leatham.com with your host identifier.
+
+Children
+ParkScreen is not directed at children and collects no personal information from anyone.
+
+Changes
+We will post any change to this policy at https://parkscreen.web.app/privacy/ and update the date above.

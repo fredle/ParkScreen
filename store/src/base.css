@@ -1,0 +1,11 @@
+*{box-sizing:border-box;margin:0}
+body{width:1920px;height:1080px;background:radial-gradient(1200px 700px at 78% 40%,#16264d 0%,#080b14 60%);color:#f2f5ff;font-family:'Segoe UI',system-ui,sans-serif;display:flex;align-items:center;padding:0 120px;gap:90px;overflow:hidden}
+.cap{flex:0 0 640px}
+.cap .k{color:#6c9bff;font-size:26px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;margin-bottom:24px}
+.cap h1{font-size:72px;line-height:1.08;font-weight:700;margin-bottom:30px}
+.cap p{font-size:32px;line-height:1.45;color:#b9c3dd}
+.win{flex:1;border-radius:18px;background:#0d0f14;border:1px solid #2a3350;box-shadow:0 40px 100px #000a;overflow:hidden}
+.win .bar{height:48px;background:#1a1f2e;display:flex;align-items:center;gap:10px;padding:0 18px;color:#8e99b8;font-size:20px}
+.win .bar i{width:14px;height:14px;border-radius:50%;background:#3a4363;display:block}
+.win img{display:block;width:100%}
+.logo{width:96px;height:96px;margin-bottom:34px}
