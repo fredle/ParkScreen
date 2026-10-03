@@ -78,7 +78,7 @@ async fn run_once(
                     other => { let _ = ev_tx.send(Event::Msg(other)); }
                 }
             }
-            Some(m) = out_rx.recv() => {
+            Some(m) = out_rx.recv(), if ready => {
                 sink.send(Message::Text(serde_json::to_string(&m)?.into())).await?;
             }
             _ = ping.tick() => {

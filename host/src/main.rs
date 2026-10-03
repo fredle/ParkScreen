@@ -131,6 +131,11 @@ fn subcommand() -> bool {
 
 #[tokio::main]
 async fn main() {
+    // Velopack runs the app with --veloapp-install/-updated/-obsolete/-uninstall and waits 30 s
+    // for it to exit. There is nothing to do in those hooks, so leave straight away.
+    if std::env::args().any(|a| a.starts_with("--veloapp-")) {
+        return;
+    }
     if flag("--help") || flag("-h") {
         println!("{USAGE}");
         return;
