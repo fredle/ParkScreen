@@ -39,12 +39,14 @@ documented), so the page and the host agent connect to the Cloud Run URL directl
 
 ## One-time setup
 
+Easiest: `bash deploy/gcp-setup.sh` does all of this (region `europe-west2`). The manual steps follow.
+
 ```bash
 PROJECT=leatham-sandbox        # as in .firebaserc; change both if you use another project
 gcloud config set project $PROJECT
 
 gcloud services enable run.googleapis.com firestore.googleapis.com cloudbuild.googleapis.com
-gcloud firestore databases create --location=us-central1   # skip if the project already has one
+gcloud firestore databases create --location=europe-west2   # skip if the project already has one
 
 # Cloud Run runs as the default compute service account; let it use Firestore.
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
@@ -67,10 +69,10 @@ Federation and signing setup where you like:
 |---|---|---|
 | var | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` | both workflows |
 | var | `FIREBASE_PROJECT_ID` | both |
-| var | `GCP_REGION` (default `us-central1`) | deploy |
+| var | `GCP_REGION` (`europe-west2`, set by the script; workflow falls back to `us-central1`) | deploy |
 | var | `PARKSCREEN_SERVER_URL` (the Cloud Run URL, after the first deploy) | release |
 | var | `SIGNING_ENDPOINT`, `SIGNING_ACCOUNT`, `SIGNING_PROFILE` (default to Teeline's) | release |
-| secret | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | release |
+| var | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (variables, not secrets; copy from Teeline; not set by the script) | release |
 
 The deploy service account needs roles to deploy Cloud Run from source (Cloud Run Admin,
 Cloud Build Editor, Service Account User, Storage access for the build bucket) and Firebase
