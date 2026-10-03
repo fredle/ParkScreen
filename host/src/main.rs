@@ -22,7 +22,13 @@ fn data_dir() -> PathBuf {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse().unwrap())).init();
-    let url = std::env::var("PARKSCREEN_URL").unwrap_or_else(|_| "wss://parkscreen.leatham.net/ws/host".into());
+    // Release builds bake the server in (PARKSCREEN_SERVER_URL at compile time); PARKSCREEN_URL
+    // overrides it at run time, e.g. for local development.
+    let server = std::env::var("PARKSCREEN_URL")
+        .ok()
+        .or_else(|| option_env!("PARKSCREEN_SERVER_URL").map(String::from))
+        .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+    let url = signalling::host_socket_url(&server);
     let dir = data_dir();
     let identity = Identity::load_or_create(&dir.join("host.key")).expect("identity");
     let allow = Arc::new(Mutex::new(AllowList::load(dir.join("cars.txt")).expect("allow-list")));

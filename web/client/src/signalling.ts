@@ -1,3 +1,4 @@
+import { wsEndpoint } from "./config";
 import type { CarToServer, ServerToCar } from "./protocol";
 
 /** WSS client with 30 s pings (Cloudflare drops idle sockets at ~100 s) and backoff reconnect. */
@@ -10,8 +11,7 @@ export class Signalling {
     this.connect();
   }
   private connect() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/car`);
+    const ws = new WebSocket(wsEndpoint("/ws/car"));
     this.ws = ws;
     ws.onopen = () => {
       this.retry = 1000;

@@ -64,14 +64,16 @@ pub async fn host_socket(socket: WebSocket, state: Arc<AppState>) {
         send(&tx, &ServerToHost::Error { message: "bad signature".into() });
         return;
     }
-    if state.db.register_host(&host_id).is_err() {
+    if let Err(e) = state.db.register_host(&host_id).await {
+        warn!("register_host: {e}");
+        send(&tx, &ServerToHost::Error { message: "storage unavailable".into() });
         return;
     }
     state.hosts.lock().unwrap().insert(host_id.clone(), tx.clone());
     info!(%host_id, "host online");
     send(&tx, &ServerToHost::Ready);
     // Tell paired cars that are already connected.
-    for car_id in state.db.cars_for_host(&host_id).unwrap_or_default() {
+    for car_id in state.db.cars_for_host(&host_id) {
         if let Some(c) = state.cars.lock().unwrap().get(&car_id) {
             send(c, &ServerToCar::HostOnline { host_id: host_id.clone() });
         }
@@ -93,10 +95,10 @@ pub async fn host_socket(socket: WebSocket, state: Arc<AppState>) {
                 send(&tx, &ServerToHost::PairCode { code, expires_in: crate::state::PAIR_CODE_TTL.as_secs() });
             }
             HostToServer::Revoke { car_id } => {
-                let _ = state.db.revoke(&car_id, &host_id);
+                let _ = state.db.revoke(&car_id, &host_id).await;
             }
             HostToServer::Signal { car_id, payload } => {
-                if state.db.is_paired(&car_id, &host_id).unwrap_or(false) {
+                if state.db.is_paired(&car_id, &host_id) {
                     if let Some(c) = state.cars.lock().unwrap().get(&car_id) {
                         send(c, &ServerToCar::Signal { host_id: host_id.clone(), payload });
                     }
@@ -113,7 +115,7 @@ pub async fn host_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
     info!(%host_id, "host offline");
-    for car_id in state.db.cars_for_host(&host_id).unwrap_or_default() {
+    for car_id in state.db.cars_for_host(&host_id) {
         if let Some(c) = state.cars.lock().unwrap().get(&car_id) {
             send(c, &ServerToCar::HostOffline { host_id: host_id.clone() });
         }
@@ -130,7 +132,7 @@ pub async fn car_socket(socket: WebSocket, state: Arc<AppState>) {
         return;
     };
     let car_id = car_id_for_token(&token);
-    let paired = state.db.hosts_for_car(&car_id).unwrap_or_default();
+    let paired = state.db.hosts_for_car(&car_id);
     if paired.is_empty() {
         send(&tx, &ServerToCar::Error { message: "not paired".into() });
         return;
@@ -154,7 +156,7 @@ pub async fn car_socket(socket: WebSocket, state: Arc<AppState>) {
             Ok(CarToServer::Ping) => send(&tx, &ServerToCar::Pong),
             Ok(CarToServer::Hello { .. }) => {}
             Ok(CarToServer::Signal { host_id, payload }) => {
-                if state.db.is_paired(&car_id, &host_id).unwrap_or(false) {
+                if state.db.is_paired(&car_id, &host_id) {
                     if let Some(h) = state.hosts.lock().unwrap().get(&host_id) {
                         send(h, &ServerToHost::Signal { car_id: car_id.clone(), payload });
                     }

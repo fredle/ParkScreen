@@ -11,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
 
 async fn start_server() -> (Arc<AppState>, String) {
-    let state = Arc::new(AppState::new(Db::open(":memory:").unwrap()));
+    let state = Arc::new(AppState::new(Db::in_memory()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let st = state.clone();

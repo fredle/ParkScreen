@@ -1,0 +1,13 @@
+{
+  "projects": {
+    "default": "leatham-sandbox"
+  },
+  "targets": {
+    "leatham-sandbox": {
+      "hosting": {
+        "parkscreen": ["parkscreen"],
+        "parkscreen-releases": ["parkscreen-releases"]
+      }
+    }
+  }
+}

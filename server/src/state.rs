@@ -15,6 +15,8 @@ const FAIL_WINDOW: Duration = Duration::from_secs(60);
 
 pub struct AppState {
     pub db: Db,
+    /// Browser origins allowed to call the API and open car sockets.
+    pub allowed_origins: Vec<String>,
     pub hosts: Mutex<HashMap<String, Tx>>,
     pub cars: Mutex<HashMap<String, Tx>>,
     codes: Mutex<HashMap<String, (String, Instant)>>,
@@ -25,11 +27,23 @@ impl AppState {
     pub fn new(db: Db) -> Self {
         Self {
             db,
+            allowed_origins: vec![],
             hosts: Default::default(),
             cars: Default::default(),
             codes: Default::default(),
             failed_claims: Default::default(),
         }
+    }
+
+    pub fn with_origins(mut self, origins: Vec<String>) -> Self {
+        self.allowed_origins = origins;
+        self
+    }
+
+    /// A request with no Origin header (host agent, curl, tests) is allowed; a browser
+    /// request must come from a listed origin.
+    pub fn origin_allowed(&self, origin: Option<&str>) -> bool {
+        origin.map_or(true, |o| self.allowed_origins.iter().any(|a| a == o))
     }
 
     /// Issue a single-use 6-digit code for `host_id`, replacing any earlier one.
@@ -77,8 +91,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn origin_rules() {
+        let s = AppState::new(Db::in_memory()).with_origins(vec!["https://parkscreen.web.app".into()]);
+        assert!(s.origin_allowed(None));
+        assert!(s.origin_allowed(Some("https://parkscreen.web.app")));
+        assert!(!s.origin_allowed(Some("https://evil.example")));
+        assert!(!s.origin_allowed(Some("http://parkscreen.web.app")));
+    }
+
+    #[test]
     fn code_is_single_use() {
-        let s = AppState::new(Db::open(":memory:").unwrap());
+        let s = AppState::new(Db::in_memory());
         let c = s.new_pair_code("h");
         assert_eq!(c.len(), 6);
         assert_eq!(s.claim_pair_code(&c).as_deref(), Some("h"));
@@ -87,7 +110,7 @@ mod tests {
 
     #[test]
     fn new_code_replaces_old() {
-        let s = AppState::new(Db::open(":memory:").unwrap());
+        let s = AppState::new(Db::in_memory());
         let a = s.new_pair_code("h");
         let b = s.new_pair_code("h");
         if a != b {
@@ -98,7 +121,7 @@ mod tests {
 
     #[test]
     fn brute_force_is_limited() {
-        let s = AppState::new(Db::open(":memory:").unwrap());
+        let s = AppState::new(Db::in_memory());
         let code = s.new_pair_code("h");
         for _ in 0..MAX_FAILED_CLAIMS {
             assert_eq!(s.claim_pair_code("nope!!"), None);

@@ -1,5 +1,6 @@
 import type { ServerToCar } from "./protocol";
 import { Session } from "./session";
+import { httpUrl } from "./config";
 import { Signalling } from "./signalling";
 import { attachInput } from "./input";
 
@@ -22,7 +23,7 @@ function pairingScreen(error = "") {
     <p class="warn">${error}</p>${WARNING}`);
   const go = async () => {
     const code = (document.getElementById("code") as HTMLInputElement).value.trim();
-    const r = await fetch("/api/pair/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+    const r = await fetch(httpUrl("/api/pair/claim"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
     if (!r.ok) return pairingScreen("Invalid or expired code.");
     store.set((await r.json()).token);
     connect();

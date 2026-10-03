@@ -16,8 +16,9 @@ add("Panel size × DPR", true, `${screen.width}×${screen.height} @${devicePixel
 add("WebCodecs VideoDecoder", !!window.VideoDecoder);
 add("Wake Lock", !!navigator.wakeLock);
 add("playoutDelayHint", c ? "playoutDelayHint" in RTCRtpReceiver.prototype : false);
-const proto = location.protocol === "https:" ? "wss" : "ws";
-const start = Date.now(); const ws = new WebSocket(`${proto}://${location.host}/ws/car`);
+// Server URL: ?server=https://... (the page itself is on Firebase Hosting; the server is on Cloud Run).
+const server = new URLSearchParams(location.search).get("server") || location.origin;
+const start = Date.now(); const ws = new WebSocket(server.replace(/^http/, "ws") + "/ws/car");
 ws.onopen = () => { add("WebSocket opens", true, ""); setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ type: "ping" })), 30000); };
 ws.onclose = () => add("WebSocket survived", false, `closed after ${Math.round((Date.now() - start) / 1000)} s`);
 setTimeout(() => ws.readyState === 1 && add("WebSocket survived 10 min (Cloudflare)", true, ""), 600000);

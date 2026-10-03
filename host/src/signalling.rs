@@ -87,3 +87,30 @@ async fn run_once(
         }
     }
 }
+
+/// `https://parkscreen-server-x.a.run.app` (or an already-`wss://` URL) → the host socket URL.
+pub fn host_socket_url(server: &str) -> String {
+    let s = server.trim().trim_end_matches('/');
+    let s = s.strip_suffix("/ws/host").unwrap_or(s);
+    let s = if let Some(rest) = s.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        s.to_string()
+    };
+    format!("{s}/ws/host")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_socket_url;
+
+    #[test]
+    fn builds_socket_urls() {
+        assert_eq!(host_socket_url("https://a.run.app"), "wss://a.run.app/ws/host");
+        assert_eq!(host_socket_url("https://a.run.app/"), "wss://a.run.app/ws/host");
+        assert_eq!(host_socket_url("http://127.0.0.1:8080"), "ws://127.0.0.1:8080/ws/host");
+        assert_eq!(host_socket_url("wss://a.run.app/ws/host"), "wss://a.run.app/ws/host");
+    }
+}

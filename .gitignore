@@ -5,3 +5,4 @@ dist/
 *.db-*
 .env
 deploy/data/
+Releases/
