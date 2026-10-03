@@ -20,7 +20,8 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
 - **`--match-viewport`** switches the chosen monitor to the car's screen size when it connects.
   Off by default, because it resizes a real monitor.
 - Without Windows (or for tests) the agent streams a test pattern through OpenH264.
-- Not yet: touch injection on Windows (`NullInput`), the tray UI and the installer.
+- Updates itself (Velopack, `updater.rs`): checks the feed every 4 hours and restarts into a newer version when no car is streaming.
+- Not yet: touch injection on Windows (`NullInput`) and the tray UI.
 
 Build from the repo root: `cargo build --release -p parkscreen-host` (needs the MSVC build
 tools). `RUST_LOG=parkscreen_host=debug` for more logging. Windows-only modules are in

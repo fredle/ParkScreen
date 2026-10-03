@@ -12,6 +12,7 @@ pub mod identity;
 pub mod input;
 pub mod rtc_sender;
 pub mod signalling;
+pub mod updater;
 pub mod convert;
 pub mod cursor;
 pub mod monitors;

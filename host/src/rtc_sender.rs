@@ -239,6 +239,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
 
     async fn answer_offer(&mut self, car_id: &str, sdp: String) -> Result<Value, String> {
         if let Some(old) = self.live.remove(car_id) {
+            crate::updater::set_live_sessions(self.live.len());
             let _ = old.pc.close().await;
             release(&self.injector, &old.input);
         }
@@ -351,6 +352,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
         });
 
         self.live.insert(car_id.to_string(), Live { input: input_state, pc, stop, ctl: ctl_tx, adaptive: Adaptive::new(bitrate, mode.refresh_hz, self.limits) });
+        crate::updater::set_live_sessions(self.live.len());
         Ok(json!({ "kind": "answer", "sdp": local.sdp }))
     }
 }
@@ -488,6 +490,7 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
 
     async fn on_car_offline(&mut self, car_id: &str) {
         if let Some(l) = self.live.remove(car_id) {
+            crate::updater::set_live_sessions(self.live.len());
             let _ = l.pc.close().await;
             release(&self.injector, &l.input);
         }

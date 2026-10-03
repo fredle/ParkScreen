@@ -134,8 +134,11 @@ async fn main() {
     // Velopack runs the app with --veloapp-install/-updated/-obsolete/-uninstall and waits 30 s
     // for it to exit. There is nothing to do in those hooks, so leave straight away.
     if std::env::args().any(|a| a.starts_with("--veloapp-")) {
+        // Let Velopack handle the hook properly when installed; exit either way.
+        velopack::VelopackApp::build().run();
         return;
     }
+    velopack::VelopackApp::build().run();
     if flag("--help") || flag("-h") {
         println!("{USAGE}");
         return;
@@ -145,6 +148,7 @@ async fn main() {
     if subcommand() {
         return;
     }
+    parkscreen_host::updater::spawn();
 
     // Release builds bake the server in (PARKSCREEN_SERVER_URL at compile time); PARKSCREEN_URL
     // overrides it at run time, e.g. for local development.

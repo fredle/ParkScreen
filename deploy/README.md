@@ -98,5 +98,5 @@ Server environment: `STORE` (`sqlite` default, `firestore`, `memory`), `DATABASE
 Tag `vX.Y.Z`. `release.yml` builds `parkscreen-host.exe` (with the server URL baked in),
 signs it with Azure Trusted Signing, packs it with Velopack (deltas against the previous
 release), signs the installer and publishes the feed to https://parkscreen-releases.web.app.
-This workflow has not run yet. The host does not call Velopack's startup hook or check for
+This workflow has not run yet.
 updates yet (see `UpdateService.cs` in Teeline for the pattern).
