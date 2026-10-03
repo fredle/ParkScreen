@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["protocol", "server", "host"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+opt-level = 3

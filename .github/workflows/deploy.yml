@@ -1,0 +1,68 @@
+name: Deploy
+
+# Server -> Cloud Run, web client -> Firebase Hosting (parkscreen.web.app).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency: deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GCP login (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy the signalling server to Cloud Run
+        # One instance only: online hosts/cars and pairing codes live in memory (see deploy/README.md).
+        # Each WebSocket is one request, so concurrency 1000 = about 500 sessions.
+        run: |
+          gcloud run deploy parkscreen-server \
+            --source . \
+            --project "${{ vars.FIREBASE_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION || 'us-central1' }}" \
+            --allow-unauthenticated \
+            --max-instances=1 \
+            --concurrency=1000 \
+            --timeout=3600 \
+            --set-env-vars "STORE=firestore,FIRESTORE_PROJECT=${{ vars.FIREBASE_PROJECT_ID }},ALLOWED_ORIGINS=https://parkscreen.web.app"
+
+      - name: Look up the server URL
+        id: server
+        run: |
+          URL=$(gcloud run services describe parkscreen-server \
+            --project "${{ vars.FIREBASE_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION || 'us-central1' }}" \
+            --format 'value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Build the web client against that server
+        working-directory: web/client
+        env:
+          VITE_SERVER_URL: ${{ steps.server.outputs.url }}
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Deploy the web client to Firebase Hosting
+        run: |
+          npx firebase-tools@15 deploy --only hosting:parkscreen \
+            --project "${{ vars.FIREBASE_PROJECT_ID }}" \
+            --non-interactive

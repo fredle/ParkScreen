@@ -1,36 +1,64 @@
-name: Release
+name: Release host agent
 
+# Modelled on the Teeline release workflow (fredle/transcriber). UNTESTED: it has not run yet.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist), e.g. v0.1.0"
+        required: true
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
-  build-sign-release:
+  release:
     runs-on: windows-latest
     environment: release
-    defaults:
-      run:
-        shell: pwsh
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Determine tag and version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          fetch-depth: 0
 
-      - name: Build release binary
-        working-directory: host
-        run: cargo build --release
+      - name: Build the host agent
+        shell: pwsh
+        env:
+          # Baked into the binary (see host/src/main.rs); the Cloud Run URL of parkscreen-server.
+          PARKSCREEN_SERVER_URL: ${{ vars.PARKSCREEN_SERVER_URL }}
+        run: |
+          cargo build --release -p parkscreen-host
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item target\release\parkscreen-host.exe stage\
 
-      - name: Run tests
-        working-directory: host
-        run: cargo test --release
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f "tag_name=${{ steps.version.outputs.tag }}" --jq .body > notes.md
+
+      - name: Install Velopack CLI
+        run: dotnet tool install --global vpk
+
+      - name: Download previous releases (for delta packages)
+        shell: pwsh
+        run: |
+          vpk download http --url "https://parkscreen-releases.web.app/" --outputDir Releases --channel win
+          if ($LASTEXITCODE -ne 0) { Write-Host "No previous release (first release?)." }
+          exit 0
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -39,44 +67,59 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Download Trusted Signing client
-        run: |
-          New-Item -ItemType Directory -Force -Path trustedsigning | Out-Null
-          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client" -OutFile trustedsigning\client.nupkg
-          Expand-Archive -Path trustedsigning\client.nupkg -DestinationPath trustedsigning\extracted -Force
+      - name: Sign parkscreen-host.exe (Azure Trusted Signing)
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\stage
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
-      - name: Write signing metadata
+      - name: Pack release (Velopack)
+        shell: pwsh
         run: |
-          @'
-          {
-            "Endpoint": "https://weu.codesigning.azure.net/",
-            "CodeSigningAccountName": "leatham-signing-account",
-            "CertificateProfileName": "cert-profile"
-          }
-          '@ | Set-Content -Path trustedsigning\metadata.json -Encoding utf8
+          vpk pack `
+            --packId ParkScreen `
+            --packVersion ${{ steps.version.outputs.version }} `
+            --packDir stage `
+            --runtime win-x64 `
+            --mainExe parkscreen-host.exe `
+            --packTitle ParkScreen `
+            --packAuthors "FBL Consulting Ltd" `
+            --releaseNotes notes.md `
+            --outputDir Releases
 
-      - name: Locate signtool
-        run: |
-          $signtool = Get-ChildItem -Recurse -Filter "signtool.exe" "C:\Program Files (x86)\Windows Kits\10\bin" |
-            Where-Object { $_.FullName -match "\\x64\\" } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $signtool) { throw "signtool.exe not found" }
-          "SIGNTOOL=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Sign the installer (Azure Trusted Signing)
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\Releases
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
-      - name: Sign parkscreen-host.exe
+      - name: Add versioned release notes
+        shell: pwsh
         run: |
-          $repoAbs = (Resolve-Path ".").Path
-          & $env:SIGNTOOL sign /v /debug /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 `
-            /dlib "$repoAbs\trustedsigning\extracted\bin\x64\Azure.CodeSigning.Dlib.dll" `
-            /dmdf "$repoAbs\trustedsigning\metadata.json" `
-            host\target\release\parkscreen-host.exe
-          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit code $LASTEXITCODE" }
-          & $env:SIGNTOOL verify /pa /v host\target\release\parkscreen-host.exe
-          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit code $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force -Path "Releases\notes" | Out-Null
+          Copy-Item notes.md "Releases\notes\${{ steps.version.outputs.version }}.md"
 
-      - name: Publish GitHub Release
+      - name: GCP login (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Deploy the release feed to Firebase Hosting
+        shell: bash
         run: |
-          gh release create "$env:GITHUB_REF_NAME" host\target\release\parkscreen-host.exe --generate-notes
-          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx firebase-tools@15 deploy --only hosting:parkscreen-releases \
+            --project ${{ vars.FIREBASE_PROJECT_ID }} \
+            --non-interactive

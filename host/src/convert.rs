@@ -18,7 +18,7 @@ pub fn bgra_to_i420(
     for row in 0..h {
         let line = &bgra[row * src_stride..row * src_stride + w * 4];
         let yrow = &mut y[row * w..(row + 1) * w];
-        for (px, out) in line.chunks_exact(4).zip(yrow.iter_mut()) {
+        for (px, out) in line.as_chunks::<4>().0.iter().zip(yrow.iter_mut()) {
             let (b, g, r) = (px[0] as i32, px[1] as i32, px[2] as i32);
             *out = (((47 * r + 157 * g + 16 * b + 128) >> 8) + 16) as u8;
         }

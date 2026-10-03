@@ -4,7 +4,6 @@
 
 use crate::capture::Frame;
 use crate::convert;
-use crate::encode::{Encoder, EncoderSettings};
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -15,6 +14,12 @@ use windows::Win32::System::Variant::VARIANT;
 
 /// Longest we wait for the encoder to return a frame before giving up on it.
 const OUTPUT_TIMEOUT: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy)]
+pub struct EncoderSettings {
+    pub fps: u32,
+    pub bitrate_bps: u32,
+}
 
 pub struct MfEncoder {
     settings: EncoderSettings,
@@ -32,10 +37,9 @@ impl MfEncoder {
         tracing::info!("hardware encoder: {}", session.name);
         Ok(Self { settings, session: Some(session), size: (w, h), want_idr: true })
     }
-}
 
-impl Encoder for MfEncoder {
-    fn encode(&mut self, frame: &Frame) -> Result<Option<Vec<u8>>> {
+    /// Encode one frame; `None` means the encoder produced no output for it.
+    pub fn encode(&mut self, frame: &Frame) -> Result<Option<Vec<u8>>> {
         let (w, h) = ((frame.width & !1) as usize, (frame.height & !1) as usize);
         if self.session.is_none() || self.size != (w, h) {
             self.session = None; // release the old encoder before opening a new one
@@ -50,8 +54,17 @@ impl Encoder for MfEncoder {
         session.encode(frame)
     }
 
-    fn force_keyframe(&mut self) {
+    pub fn force_keyframe(&mut self) {
         self.want_idr = true;
+    }
+
+    /// Retarget the bitrate; applied live where the encoder allows it, and kept for the
+    /// next session otherwise.
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.settings.bitrate_bps = bitrate_bps;
+        if let Some(s) = &self.session {
+            s.set_bitrate(bitrate_bps);
+        }
     }
 }
 
@@ -224,6 +237,12 @@ impl Session {
     fn force_keyframe(&mut self) {
         if let Some(c) = &self.codec {
             let _ = unsafe { c.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1)) };
+        }
+    }
+
+    fn set_bitrate(&self, bitrate_bps: u32) {
+        if let Some(c) = &self.codec {
+            let _ = unsafe { c.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant_u32(bitrate_bps)) };
         }
     }
 

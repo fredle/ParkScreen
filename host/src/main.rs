@@ -1,64 +1,53 @@
-mod capture;
-mod convert;
-mod cursor;
-mod display;
-mod encode;
-#[cfg(windows)]
-mod encode_mf;
-mod pipeline;
-mod transport;
+use parkscreen_host::input::NullInput;
+use parkscreen_host::{
+    agent::Agent,
+    allowlist::AllowList,
+    identity::Identity,
+    monitors::{self, MonitorMode, Selector},
+    rtc_sender::WebRtcHandler,
+    signalling,
+};
+use std::{path::PathBuf, str::FromStr, sync::{Arc, Mutex}};
 
-use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
-use display::{Mode, Selector};
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+const USAGE: &str = "\
+parkscreen-host [--pair] [--with-input] [--bitrate 12M]
+                [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
+parkscreen-host list
+parkscreen-host set-mode --monitor <index>|<name> 1920x1200[@60]
 
-#[derive(Parser)]
-#[command(name = "parkscreen-host", version, about = "Stream a Windows monitor to a browser (the Tesla) over WebRTC")]
-struct Cli {
-    #[command(subcommand)]
-    command: Cmd,
+On Windows the agent streams the chosen monitor (default: a virtual display if present);
+elsewhere it streams a test pattern. `--match-viewport` switches the monitor to the car's
+screen size when it connects. RUST_LOG=parkscreen_host=debug for more logging.";
+
+fn data_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("PARKSCREEN_DATA") {
+        return d.into();
+    }
+    let base = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("XDG_DATA_HOME")).unwrap_or_else(|_| {
+        format!("{}/.local/share", std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+    });
+    PathBuf::from(base).join("ParkScreen")
 }
 
-#[derive(Subcommand)]
-enum Cmd {
-    /// List monitors attached to the desktop.
-    List,
-    /// Change a monitor's resolution, e.g. `set-mode --monitor 2 1920x1200@60`.
-    SetMode {
-        /// Monitor index (from `list`), GDI name (\\.\DISPLAY3) or part of its name.
-        #[arg(long)]
-        monitor: Selector,
-        /// Mode such as 1920x1200 or 1920x1200@60.
-        mode: Mode,
-    },
-    /// Capture a monitor and serve it to browsers on the local network.
-    Serve {
-        /// Monitor index, GDI name, part of its name, or `auto` (a virtual display if present).
-        #[arg(long, default_value = "auto")]
-        monitor: Selector,
-        #[arg(long, default_value_t = 60)]
-        fps: u32,
-        /// Target bitrate, e.g. 12M or 8000k.
-        #[arg(long, default_value = "12M", value_parser = parse_bitrate)]
-        bitrate: u32,
-        /// Video encoder: hardware (NVENC/Quick Sync/AMF) if available, else software.
-        #[arg(long, value_enum, default_value = "auto")]
-        encoder: encode::EncoderKind,
-        /// Switch the monitor to the viewer's reported screen size when it connects.
-        #[arg(long)]
-        match_viewport: bool,
-        /// HTTP port for the player page and signalling.
-        #[arg(long, default_value_t = 8765)]
-        port: u16,
-        /// Fixed UDP port for WebRTC media (open it in the firewall).
-        #[arg(long, default_value_t = 8766)]
-        udp_port: u16,
-    },
+fn flag(name: &str) -> bool {
+    std::env::args().any(|a| a == name)
 }
 
-/// Parse `12M`, `8000k`, `5000000` into bits per second.
-fn parse_bitrate(s: &str) -> Result<u32, String> {
+/// Value of `--name value` or `--name=value`.
+fn opt(name: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let prefix = format!("{name}=");
+    args.iter().enumerate().find_map(|(i, a)| {
+        if a == name {
+            args.get(i + 1).cloned()
+        } else {
+            a.strip_prefix(&prefix).map(String::from)
+        }
+    })
+}
+
+/// Parse `12M`, `8000k` or `5000000` (bits per second) into kilobits per second.
+fn parse_bitrate_kbps(s: &str) -> Result<u32, String> {
     let s = s.trim().to_ascii_lowercase();
     let (num, mult) = match s.strip_suffix('m') {
         Some(n) => (n, 1_000_000.0),
@@ -71,15 +60,12 @@ fn parse_bitrate(s: &str) -> Result<u32, String> {
     if v <= 0.0 {
         return Err("bitrate must be positive".into());
     }
-    Ok((v * mult) as u32)
+    Ok((v * mult / 1000.0).round().max(1.0) as u32)
 }
 
-/// The address other devices on the LAN would use to reach this PC.
-fn lan_ip() -> Option<IpAddr> {
-    // Connecting a UDP socket sends nothing; it just makes the OS pick the outbound interface.
-    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("192.0.2.1:9").ok()?;
-    Some(sock.local_addr().ok()?.ip())
+fn exit_with(msg: impl std::fmt::Display) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(2);
 }
 
 #[cfg(windows)]
@@ -92,21 +78,21 @@ fn init_dpi() {
 #[cfg(not(windows))]
 fn init_dpi() {}
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "parkscreen_host=info,webrtc::peer_connection::driver=off,rtc_mdns=off,warn".into()),
-        )
-        .init();
-    init_dpi();
+fn selector() -> Selector {
+    match opt("--monitor") {
+        Some(s) => Selector::from_str(&s).unwrap_or_else(|e| exit_with(e)),
+        None => Selector::Auto,
+    }
+}
 
-    match Cli::parse().command {
-        Cmd::List => {
-            let monitors = display::enumerate()?;
+/// Handles the `list` and `set-mode` subcommands. Returns false for anything else.
+fn subcommand() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let monitors = monitors::enumerate().unwrap_or_else(|e| exit_with(format!("{e:#}")));
             if monitors.is_empty() {
-                bail!("no monitors found");
+                exit_with("no monitors found");
             }
             for m in &monitors {
                 println!(
@@ -124,45 +110,90 @@ async fn main() -> Result<()> {
                     if m.is_virtual() { "  virtual?" } else { "" },
                 );
             }
+            true
         }
-        Cmd::SetMode { monitor, mode } => {
-            let monitors = display::enumerate()?;
-            let m = display::select(&monitors, &monitor)?;
-            display::set_mode(&m.device_name, mode)?;
+        Some("set-mode") => {
+            let mode = args
+                .iter()
+                .skip(1)
+                .rev()
+                .find_map(|a| MonitorMode::from_str(a).ok())
+                .unwrap_or_else(|| exit_with("set-mode needs a mode such as 1920x1200@60"));
+            let all = monitors::enumerate().unwrap_or_else(|e| exit_with(format!("{e:#}")));
+            let m = monitors::select(&all, &selector()).unwrap_or_else(|e| exit_with(format!("{e:#}")));
+            monitors::set_mode(&m.device_name, mode).unwrap_or_else(|e| exit_with(format!("{e:#}")));
             println!("{} set to {mode}", m.device_name);
+            true
         }
-        Cmd::Serve { monitor, fps, bitrate, encoder, match_viewport, port, udp_port } => {
-            let monitors = display::enumerate()?;
-            let m = display::select(&monitors, &monitor)?.clone();
-            println!(
-                "Capturing monitor {} {} \"{}\" ({}x{})",
-                m.index, m.device_name, m.friendly_name, m.width, m.height
-            );
-            let pipeline = pipeline::Pipeline::start(
-                m.device_name.clone(),
-                encode::EncoderSettings { fps, bitrate_bps: bitrate },
-                encoder,
-                (m.width, m.height),
-            );
-            let ip = lan_ip();
-            match ip {
-                Some(ip) => println!("\nOpen in the car (parked!) or any browser on this network:\n\n    http://{ip}:{port}\n"),
-                None => println!("\nListening on port {port}.\n"),
-            }
-            println!("If the connection stalls, allow UDP {udp_port} and TCP {port} through Windows Firewall.");
-            transport::serve(
-                pipeline,
-                transport::ServerConfig {
-                    bind: SocketAddr::from(([0, 0, 0, 0], port)),
-                    udp_port,
-                    match_viewport,
-                },
-            )
-            .await
-            .context("server stopped")?;
-        }
+        _ => false,
     }
-    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    if flag("--help") || flag("-h") {
+        println!("{USAGE}");
+        return;
+    }
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse().unwrap())).init();
+    init_dpi();
+    if subcommand() {
+        return;
+    }
+
+    // Release builds bake the server in (PARKSCREEN_SERVER_URL at compile time); PARKSCREEN_URL
+    // overrides it at run time, e.g. for local development.
+    let server = std::env::var("PARKSCREEN_URL")
+        .ok()
+        .or_else(|| option_env!("PARKSCREEN_SERVER_URL").map(String::from))
+        .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+    let url = signalling::host_socket_url(&server);
+    let dir = data_dir();
+    let identity = Identity::load_or_create(&dir.join("host.key")).expect("identity");
+    let allow = Arc::new(Mutex::new(AllowList::load(dir.join("cars.txt")).expect("allow-list")));
+    println!("host id: {}", identity.host_id());
+
+    let bitrate_kbps = opt("--bitrate").map(|b| parse_bitrate_kbps(&b).unwrap_or_else(|e| exit_with(e)));
+
+    #[cfg(windows)]
+    let (display, media) = {
+        use parkscreen_host::windows_media::{EncoderKind, ExistingMonitorDisplay, WindowsMedia};
+        let monitor = selector();
+        let encoder = opt("--encoder").map_or(EncoderKind::Auto, |e| e.parse().unwrap_or_else(|e| exit_with(e)));
+        (
+            ExistingMonitorDisplay { monitor: monitor.clone(), match_viewport: flag("--match-viewport") },
+            Arc::new(WindowsMedia { monitor, encoder, idr_secs: 10 }),
+        )
+    };
+    #[cfg(not(windows))]
+    let (display, media) = (
+        parkscreen_host::display::NullDisplay::default(),
+        Arc::new(parkscreen_host::rtc_sender::SoftwareMedia::default()),
+    );
+
+    let (tx, events) = signalling::spawn(url, identity);
+    let mut handler = {
+        let gate = allow.clone();
+        WebRtcHandler::new(display, media)
+            .with_input(Box::new(NullInput), Arc::new(move |car| gate.lock().unwrap().input_allowed(car)))
+    };
+    if let Some(k) = bitrate_kbps {
+        handler.bitrate_kbps = k;
+    }
+    let mut agent = Agent {
+        tx: tx.clone(),
+        allow: allow.clone(),
+        input_on_pair: flag("--with-input"),
+        handler,
+        on_pair_code: Box::new(|code| println!("Pairing code (valid 5 min): {code}")),
+    };
+    if flag("--pair") {
+        agent.request_pair_code();
+    }
+    tokio::select! {
+        _ = agent.run(events) => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
 }
 
 #[cfg(test)]
@@ -171,11 +202,11 @@ mod tests {
 
     #[test]
     fn parses_bitrates() {
-        assert_eq!(parse_bitrate("12M").unwrap(), 12_000_000);
-        assert_eq!(parse_bitrate("8000k").unwrap(), 8_000_000);
-        assert_eq!(parse_bitrate("2.5m").unwrap(), 2_500_000);
-        assert_eq!(parse_bitrate("5000000").unwrap(), 5_000_000);
-        assert!(parse_bitrate("fast").is_err());
-        assert!(parse_bitrate("0").is_err());
+        assert_eq!(parse_bitrate_kbps("12M").unwrap(), 12_000);
+        assert_eq!(parse_bitrate_kbps("8000k").unwrap(), 8_000);
+        assert_eq!(parse_bitrate_kbps("2.5m").unwrap(), 2_500);
+        assert_eq!(parse_bitrate_kbps("5000000").unwrap(), 5_000);
+        assert!(parse_bitrate_kbps("fast").is_err());
+        assert!(parse_bitrate_kbps("0").is_err());
     }
 }
