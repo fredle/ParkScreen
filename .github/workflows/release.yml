@@ -110,6 +110,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "Releases\notes" | Out-Null
           Copy-Item notes.md "Releases\notes\${{ steps.version.outputs.version }}.md"
+          # Immutable, versioned installer URL for Microsoft Store certification.
+          New-Item -ItemType Directory -Force -Path "Releases\v${{ steps.version.outputs.version }}" | Out-Null
+          Copy-Item Releases\ParkScreen-win-Setup.exe "Releases\v${{ steps.version.outputs.version }}\ParkScreen-win-Setup.exe"
 
       - name: GCP login (Workload Identity Federation)
         uses: google-github-actions/auth@v2
