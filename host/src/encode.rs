@@ -2,12 +2,13 @@
 //! software one later (roadmap W2).
 
 use crate::capture::Frame;
+use crate::convert;
 use anyhow::{Context, Result};
 use openh264::encoder::{
     BitRate, Complexity, Encoder as H264, EncoderConfig, FrameRate, IntraFramePeriod, Profile,
-    RateControlMode, UsageType,
+    RateControlMode, UsageType, VuiConfig,
 };
-use openh264::formats::{BgraSliceU8, YUVBuffer};
+use openh264::formats::YUVSlices;
 use openh264::OpenH264API;
 
 #[derive(Debug, Clone, Copy)]
@@ -29,17 +30,16 @@ pub struct OpenH264Encoder {
     settings: EncoderSettings,
     inner: Option<H264>,
     size: (usize, usize),
-    yuv: Option<YUVBuffer>,
+    planes: (Vec<u8>, Vec<u8>, Vec<u8>),
     want_idr: bool,
 }
 
 impl OpenH264Encoder {
     pub fn new(settings: EncoderSettings) -> Self {
-        Self { settings, inner: None, size: (0, 0), yuv: None, want_idr: true }
+        Self { settings, inner: None, size: (0, 0), planes: Default::default(), want_idr: true }
     }
 
-    fn build(&self, w: usize, h: usize) -> Result<H264> {
-        let _ = (w, h); // openh264 reads the size from the first frame
+    fn build(&self) -> Result<H264> {
         let cfg = EncoderConfig::new()
             // ScreenContentRealTime costs ~25 ms per 1920x1200 frame in software (4x the camera
             // mode), which cannot hold 60 fps; camera mode at 12 Mbps is still sharp for desktops.
@@ -53,6 +53,7 @@ impl OpenH264Encoder {
             .background_detection(false)
             .adaptive_quantization(false)
             .long_term_reference(false)
+            .vui(VuiConfig::bt709())
             .skip_frames(true)
             // A keyframe every ~10 s as insurance; PLI covers real losses.
             .intra_frame_period(IntraFramePeriod::from_num_frames(self.settings.fps * 10));
@@ -66,32 +67,20 @@ impl Encoder for OpenH264Encoder {
         let w = frame.width as usize & !1;
         let h = frame.height as usize & !1;
         if self.inner.is_none() || self.size != (w, h) {
-            self.inner = Some(self.build(w, h)?);
-            self.yuv = Some(YUVBuffer::new(w, h));
+            self.inner = Some(self.build()?);
+            self.planes = (vec![0; w * h], vec![0; w * h / 4], vec![0; w * h / 4]);
             self.size = (w, h);
             self.want_idr = true;
         }
         let enc = self.inner.as_mut().unwrap();
-        let yuv = self.yuv.as_mut().unwrap();
-
-        let t_conv = std::time::Instant::now();
-        if frame.width as usize == w && frame.height as usize == h {
-            yuv.read_bgra8(BgraSliceU8::new(&frame.bgra, (w, h)));
-        } else {
-            let mut cropped = Vec::with_capacity(w * h * 4);
-            for r in 0..h {
-                let start = r * frame.width as usize * 4;
-                cropped.extend_from_slice(&frame.bgra[start..start + w * 4]);
-            }
-            yuv.read_bgra8(BgraSliceU8::new(&cropped, (w, h)));
-        }
+        let (y, u, v) = &mut self.planes;
+        convert::bgra_to_i420(&frame.bgra, frame.width as usize * 4, w, h, y, u, v);
+        let yuv = YUVSlices::new((y, u, v), (w, h), (w, w / 2, w / 2));
 
         if std::mem::take(&mut self.want_idr) {
             enc.force_intra_frame();
         }
-        let t_enc = std::time::Instant::now();
-        let bits = enc.encode(yuv).context("OpenH264 encode")?;
-        tracing::trace!("convert {:?} encode {:?}", t_enc - t_conv, t_enc.elapsed());
+        let bits = enc.encode(&yuv).context("OpenH264 encode")?;
         let data = bits.to_vec();
         Ok(if data.is_empty() { None } else { Some(data) })
     }
@@ -99,6 +88,63 @@ impl Encoder for OpenH264Encoder {
     fn force_keyframe(&mut self) {
         self.want_idr = true;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum EncoderKind {
+    /// Hardware if available, otherwise software.
+    Auto,
+    Hardware,
+    Software,
+}
+
+/// Uses `primary` until it fails, then switches to OpenH264 for good.
+struct Fallback {
+    primary: Option<Box<dyn Encoder>>,
+    software: OpenH264Encoder,
+}
+
+impl Encoder for Fallback {
+    fn encode(&mut self, frame: &Frame) -> Result<Option<Vec<u8>>> {
+        if let Some(p) = self.primary.as_mut() {
+            match p.encode(frame) {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    tracing::warn!("hardware encoder failed ({e:#}); switching to software");
+                    self.primary = None;
+                    self.software.force_keyframe();
+                }
+            }
+        }
+        self.software.encode(frame)
+    }
+
+    fn force_keyframe(&mut self) {
+        if let Some(p) = self.primary.as_mut() {
+            p.force_keyframe();
+        }
+        self.software.force_keyframe();
+    }
+}
+
+/// Build the encoder for `kind`. `width`/`height` are the initial capture size, used to
+/// check up front that a hardware encoder works.
+pub fn create(kind: EncoderKind, settings: EncoderSettings, width: u32, height: u32) -> Result<Box<dyn Encoder>> {
+    let software = OpenH264Encoder::new(settings);
+    if kind == EncoderKind::Software {
+        return Ok(Box::new(software));
+    }
+    #[cfg(windows)]
+    match crate::encode_mf::MfEncoder::probe(settings, width, height) {
+        Ok(hw) => return Ok(Box::new(Fallback { primary: Some(Box::new(hw)), software })),
+        Err(e) if kind == EncoderKind::Hardware => return Err(e.context("hardware encoder requested")),
+        Err(e) => tracing::info!("no usable hardware encoder ({e:#}); using OpenH264"),
+    }
+    let _ = (width, height);
+    if kind == EncoderKind::Hardware {
+        anyhow::bail!("hardware encoding is only supported on Windows");
+    }
+    Ok(Box::new(software))
 }
 
 /// NAL unit types in an Annex-B stream.
@@ -163,30 +209,5 @@ mod tests {
         let mut enc = OpenH264Encoder::new(EncoderSettings { fps: 30, bitrate_bps: 1_000_000 });
         let frame = Frame { width: 65, height: 63, bgra: vec![10; 65 * 63 * 4] };
         assert!(enc.encode(&frame).unwrap().is_some());
-    }
-}
-
-#[cfg(test)]
-mod bench {
-    use super::*;
-    use std::time::Instant;
-
-    #[test]
-    #[ignore]
-    fn bench_1920x1200() {
-        let (w, h) = (1920usize, 1200usize);
-        let mut bgra = vec![0u8; w * h * 4];
-        for (i, b) in bgra.iter_mut().enumerate() { *b = (i * 31 % 251) as u8; }
-        let mut yuv = YUVBuffer::new(w, h);
-        let t = Instant::now();
-        for _ in 0..10 { yuv.read_bgra8(BgraSliceU8::new(&bgra, (w, h))); }
-        println!("convert: {:?}/frame", t.elapsed() / 10);
-        let mut enc = OpenH264Encoder::new(EncoderSettings { fps: 60, bitrate_bps: 12_000_000 });
-        let f = Frame { width: w as u32, height: h as u32, bgra };
-        enc.encode(&f).unwrap();
-        let mut f = f;
-        let t = Instant::now();
-        for n in 0..10usize { for (i, b) in f.bgra.iter_mut().enumerate().step_by(7) { *b = ((i + n * 13) * 31 % 251) as u8; } enc.encode(&f).unwrap(); }
-        println!("encode incl convert: {:?}/frame", t.elapsed() / 10);
     }
 }

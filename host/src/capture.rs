@@ -49,6 +49,7 @@ impl Duplicator {
 #[cfg(windows)]
 mod win {
     use super::*;
+    use crate::cursor::{self, CursorShape, CursorState};
     use anyhow::{anyhow, Context};
     use windows::core::Interface;
     use windows::Win32::Foundation::HMODULE;
@@ -63,8 +64,10 @@ mod win {
         staging: ID3D11Texture2D,
         width: u32,
         height: u32,
-        /// Last frame returned, for the case where only the pointer moved.
-        has_frame: bool,
+        /// Latest desktop image without the pointer, tightly packed BGRA.
+        desktop: Vec<u8>,
+        shape: CursorShape,
+        cursor: CursorState,
     }
 
     fn wide_eq(w: &[u16], s: &str) -> bool {
@@ -143,12 +146,15 @@ mod win {
                     staging: staging.context("no staging texture")?,
                     width,
                     height,
-                    has_frame: false,
+                    desktop: Vec::new(),
+                    shape: CursorShape::default(),
+                    cursor: CursorState::default(),
                 })
             }
         }
 
-        /// Wait up to `timeout_ms` for a new desktop image.
+        /// Wait up to `timeout_ms` for a desktop or pointer change, and return the desktop
+        /// with the pointer drawn on it.
         pub fn next_frame(&mut self, timeout_ms: u32) -> Result<Captured> {
             unsafe {
                 let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -159,30 +165,62 @@ mod win {
                     Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => return Ok(Captured::Lost),
                     Err(e) => return Err(e.into()),
                 }
-                // Pointer-only updates carry no new desktop pixels. W1 draws no cursor,
-                // so skip them (unless this is the very first frame).
-                if info.LastPresentTime == 0 && self.has_frame {
-                    self.duplication.ReleaseFrame()?;
+                let result = self.absorb(&info, resource);
+                self.duplication.ReleaseFrame()?;
+                let changed = result?;
+                if !changed || self.desktop.is_empty() {
                     return Ok(Captured::Idle);
                 }
-                let result = (|| -> Result<Frame> {
-                    let resource = resource.context("no frame resource")?;
-                    let tex: ID3D11Texture2D = resource.cast()?;
-                    self.context.CopyResource(&self.staging, &tex);
-                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                    self.context
-                        .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-                    let pitch = mapped.RowPitch as usize;
-                    let len = pitch * self.height as usize;
-                    let src = std::slice::from_raw_parts(mapped.pData as *const u8, len);
-                    let bgra = unpitch(src, pitch, self.width as usize * 4, self.height as usize);
-                    self.context.Unmap(&self.staging, 0);
-                    Ok(Frame { width: self.width, height: self.height, bgra })
-                })();
-                self.duplication.ReleaseFrame()?;
-                self.has_frame = true;
-                Ok(Captured::Frame(result?))
+                let mut bgra = self.desktop.clone();
+                cursor::composite(
+                    &mut bgra,
+                    self.width as usize,
+                    self.height as usize,
+                    &self.shape,
+                    self.cursor,
+                );
+                Ok(Captured::Frame(Frame { width: self.width, height: self.height, bgra }))
             }
+        }
+
+        /// Update desktop/pointer state from an acquired frame. Returns true if anything changed.
+        unsafe fn absorb(&mut self, info: &DXGI_OUTDUPL_FRAME_INFO, resource: Option<IDXGIResource>) -> Result<bool> {
+            let mut changed = false;
+
+            if info.LastPresentTime != 0 || self.desktop.is_empty() {
+                let resource = resource.context("no frame resource")?;
+                let tex: ID3D11Texture2D = resource.cast()?;
+                self.context.CopyResource(&self.staging, &tex);
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                let pitch = mapped.RowPitch as usize;
+                let src = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * self.height as usize);
+                self.desktop = unpitch(src, pitch, self.width as usize * 4, self.height as usize);
+                self.context.Unmap(&self.staging, 0);
+                changed = true;
+            }
+
+            if info.LastMouseUpdateTime != 0 {
+                let p = info.PointerPosition;
+                self.cursor = CursorState { visible: p.Visible.as_bool(), x: p.Position.x, y: p.Position.y };
+                changed = true;
+            }
+
+            if info.PointerShapeBufferSize > 0 {
+                let mut buf = vec![0u8; info.PointerShapeBufferSize as usize];
+                let mut needed = 0u32;
+                let mut si = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+                self.duplication.GetFramePointerShape(
+                    buf.len() as u32,
+                    buf.as_mut_ptr() as *mut _,
+                    &mut needed,
+                    &mut si,
+                )?;
+                let height = if si.Type == cursor::SHAPE_MONOCHROME { si.Height / 2 } else { si.Height };
+                self.shape = CursorShape { kind: si.Type, width: si.Width, height, pitch: si.Pitch, data: buf };
+                changed = true;
+            }
+            Ok(changed)
         }
     }
 }

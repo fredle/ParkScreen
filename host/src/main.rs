@@ -1,6 +1,10 @@
 mod capture;
+mod convert;
+mod cursor;
 mod display;
 mod encode;
+#[cfg(windows)]
+mod encode_mf;
 mod pipeline;
 mod transport;
 
@@ -38,6 +42,9 @@ enum Cmd {
         /// Target bitrate, e.g. 12M or 8000k.
         #[arg(long, default_value = "12M", value_parser = parse_bitrate)]
         bitrate: u32,
+        /// Video encoder: hardware (NVENC/Quick Sync/AMF) if available, else software.
+        #[arg(long, value_enum, default_value = "auto")]
+        encoder: encode::EncoderKind,
         /// Switch the monitor to the viewer's reported screen size when it connects.
         #[arg(long)]
         match_viewport: bool,
@@ -124,7 +131,7 @@ async fn main() -> Result<()> {
             display::set_mode(&m.device_name, mode)?;
             println!("{} set to {mode}", m.device_name);
         }
-        Cmd::Serve { monitor, fps, bitrate, match_viewport, port, udp_port } => {
+        Cmd::Serve { monitor, fps, bitrate, encoder, match_viewport, port, udp_port } => {
             let monitors = display::enumerate()?;
             let m = display::select(&monitors, &monitor)?.clone();
             println!(
@@ -134,6 +141,8 @@ async fn main() -> Result<()> {
             let pipeline = pipeline::Pipeline::start(
                 m.device_name.clone(),
                 encode::EncoderSettings { fps, bitrate_bps: bitrate },
+                encoder,
+                (m.width, m.height),
             );
             let ip = lan_ip();
             match ip {

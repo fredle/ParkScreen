@@ -7,7 +7,7 @@
 
 use crate::capture::{Captured, Duplicator, Frame};
 use crate::display::{self, Mode};
-use crate::encode::{Encoder, EncoderSettings, OpenH264Encoder};
+use crate::encode::{self, EncoderKind, EncoderSettings};
 use bytes::Bytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -37,7 +37,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Start the capture thread for `device_name` (e.g. `\\.\DISPLAY3`).
-    pub fn start(device_name: String, settings: EncoderSettings) -> Arc<Self> {
+    pub fn start(device_name: String, settings: EncoderSettings, kind: EncoderKind, size: (u32, u32)) -> Arc<Self> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let sink = Arc::new(Mutex::new(None));
         let active = Arc::new(AtomicBool::new(false));
@@ -50,7 +50,7 @@ impl Pipeline {
         });
         std::thread::Builder::new()
             .name("capture-encode".into())
-            .spawn(move || run(device_name, settings, cmd_rx, sink, active))
+            .spawn(move || run(device_name, settings, kind, size, cmd_rx, sink, active))
             .expect("spawn capture thread");
         p
     }
@@ -93,12 +93,21 @@ impl Drop for Pipeline {
 fn run(
     device_name: String,
     settings: EncoderSettings,
+    kind: EncoderKind,
+    size: (u32, u32),
     cmd_rx: mpsc::Receiver<Command>,
     sink: Arc<Mutex<Option<tokio::sync::mpsc::Sender<Encoded>>>>,
     active: Arc<AtomicBool>,
 ) {
     let interval = Duration::from_micros(1_000_000 / settings.fps.max(1) as u64);
-    let mut encoder = OpenH264Encoder::new(settings);
+    // Created here because Media Foundation objects belong to this thread.
+    let mut encoder = match encode::create(kind, settings, size.0, size.1) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("cannot create encoder: {e:#}");
+            return;
+        }
+    };
     let mut dup: Option<Duplicator> = None;
     let mut last: Option<Frame> = None;
     let mut pending = false;
