@@ -12,7 +12,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use rtc::{
-    interceptor::Registry,
+    interceptor::{Attribute, Interceptor, Packet, Registry, Slot, StreamInfo, TaggedPacket},
     media::Sample,
     media_stream::MediaStreamTrack,
     peer_connection::{
@@ -24,11 +24,14 @@ use rtc::{
         sdp::RTCSessionDescription,
         transport::{RTCIceCandidateInit, RTCIceServer},
     },
+    rtcp::payload_feedbacks::{full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication},
+    sansio::Protocol,
+    shared::error::Error as RtcError,
     rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
 };
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -36,6 +39,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use webrtc::media_stream::track_local::TrackLocalEvent;
 use tracing::{info, warn};
 use webrtc::{
     media_stream::{
@@ -82,7 +86,65 @@ pub fn local_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".into())
 }
 
+/// Commands for the streaming loop.
+#[derive(Debug)]
+enum Ctl {
+    Keyframe,
+    Bitrate(u32),
+}
+
+/// Hands inbound keyframe requests (PLI/FIR) to the application; drops other inbound RTCP
+/// (the default interceptors have already acted on it). Must sit last in the chain.
+#[derive(Default)]
+struct KeyframeForwarder {
+    read_queue: VecDeque<TaggedPacket>,
+    write_queue: VecDeque<TaggedPacket>,
+}
+
+impl Protocol<TaggedPacket, TaggedPacket, ()> for KeyframeForwarder {
+    type Rout = TaggedPacket;
+    type Wout = TaggedPacket;
+    type Eout = ();
+    type Error = RtcError;
+    type Time = Instant;
+
+    fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Self::Error> {
+        if let Packet::Rtcp(packets) = &msg.message.packet {
+            let reqs: Vec<_> = packets
+                .iter()
+                .filter(|p| p.as_any().is::<PictureLossIndication>() || p.as_any().is::<FullIntraRequest>())
+                .cloned()
+                .collect();
+            if reqs.is_empty() {
+                return Ok(());
+            }
+            msg.message.packet = Packet::Rtcp(reqs);
+            msg.message.add(Attribute::DeliverToApplication);
+        }
+        self.read_queue.push_back(msg);
+        Ok(())
+    }
+    fn poll_read(&mut self) -> Option<Self::Rout> {
+        self.read_queue.pop_front()
+    }
+    fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
+        self.write_queue.push_back(msg);
+        Ok(())
+    }
+    fn poll_write(&mut self) -> Option<Self::Wout> {
+        self.write_queue.pop_front()
+    }
+}
+
+impl Interceptor for KeyframeForwarder {
+    fn bind_local_stream(&mut self, _: &StreamInfo) {}
+    fn unbind_local_stream(&mut self, _: &StreamInfo) {}
+    fn bind_remote_stream(&mut self, _: &StreamInfo) {}
+    fn unbind_remote_stream(&mut self, _: &StreamInfo) {}
+}
+
 struct Live {
+    ctl: mpsc::UnboundedSender<Ctl>,
     pc: Arc<dyn PeerConnection>,
     stop: Arc<AtomicBool>,
 }
@@ -128,6 +190,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
         let mut me = MediaEngine::default();
         me.register_codec(codec.clone(), RtpCodecKind::Video).map_err(|e| err(&e))?;
         let registry = register_default_interceptors(Registry::new(), &mut me).map_err(|e| err(&e))?;
+        let registry = registry.with(Slot::from(14_000), KeyframeForwarder::default());
         let config = RTCConfigurationBuilder::new()
             .with_ice_servers(vec![RTCIceServer { urls: vec!["stun:stun.cloudflare.com:3478".into()], ..Default::default() }])
             .build();
@@ -188,6 +251,20 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
         let media = self.media.clone();
         let bitrate = self.bitrate_kbps;
         let stop2 = stop.clone();
+        let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
+        let rtcp_ctl = ctl_tx.clone();
+        let rtcp_track = track.clone();
+        let rtcp_stop = stop.clone();
+        tokio::spawn(async move {
+            // Keyframe requests marked by KeyframeForwarder arrive as track-local events.
+            while let Some(ev) = rtcp_track.poll().await {
+                if rtcp_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let TrackLocalEvent::OnRtcpPacket(_) = ev else { continue };
+                let _ = rtcp_ctl.send(Ctl::Keyframe);
+            }
+        });
         tokio::spawn(async move {
             while let Some(s) = state_rx.recv().await {
                 info!("peer connection: {s}");
@@ -199,12 +276,12 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
                 }
             }
             let Some(&ssrc) = track.ssrcs().await.first() else { return };
-            if let Err(e) = stream(track, ssrc, pt, mode, bitrate, media, stop2).await {
+            if let Err(e) = stream(track, ssrc, pt, mode, bitrate, media, stop2, ctl_rx).await {
                 warn!("stream ended: {e}");
             }
         });
 
-        self.live.insert(car_id.to_string(), Live { pc, stop });
+        self.live.insert(car_id.to_string(), Live { pc, stop, ctl: ctl_tx });
         Ok(json!({ "kind": "answer", "sdp": local.sdp }))
     }
 }
@@ -217,6 +294,7 @@ async fn stream(
     bitrate_kbps: u32,
     media: Arc<dyn MediaFactory>,
     stop: Arc<AtomicBool>,
+    mut ctl: mpsc::UnboundedReceiver<Ctl>,
 ) -> Result<(), String> {
     let (mut cap, mut enc) = media.make(mode, bitrate_kbps)?;
     let frame_dur = Duration::from_secs_f64(1.0 / mode.refresh_hz.max(1) as f64);
@@ -226,6 +304,12 @@ async fn stream(
     let mut last = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         tick.tick().await;
+        while let Ok(c) = ctl.try_recv() {
+            match c {
+                Ctl::Keyframe => enc.request_keyframe(),
+                Ctl::Bitrate(k) => enc.set_bitrate(k),
+            }
+        }
         let Some(frame) = cap.next_frame() else { continue };
         let data = enc.encode(&frame);
         if data.is_empty() {
@@ -269,6 +353,16 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
                     }
                 }
             }
+            Some("bitrate") => {
+                if let (Some(k), Some(live)) = (payload.get("kbps").and_then(Value::as_u64), self.live.get(car_id)) {
+                    let _ = live.ctl.send(Ctl::Bitrate(k.min(u32::MAX as u64) as u32));
+                }
+            }
+            Some("keyframe") => {
+                if let Some(live) = self.live.get(car_id) {
+                    let _ = live.ctl.send(Ctl::Keyframe);
+                }
+            }
             Some("viewport") => {
                 let g = |k| payload.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
                 let (w, h, fps) = (g("w"), g("h"), g("fps"));
@@ -296,10 +390,17 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
 }
 
 /// Default (cross-platform) media: test pattern + openh264.
-pub struct SoftwareMedia;
+pub struct SoftwareMedia {
+    pub idr_secs: u32,
+}
+impl Default for SoftwareMedia {
+    fn default() -> Self {
+        Self { idr_secs: 2 }
+    }
+}
 impl MediaFactory for SoftwareMedia {
     fn make(&self, mode: Mode, bitrate_kbps: u32) -> Result<(Box<dyn Capture>, Box<dyn Encoder>), String> {
-        let cfg = EncoderConfig { width: mode.width, height: mode.height, fps: mode.refresh_hz, bitrate_kbps };
+        let cfg = EncoderConfig { width: mode.width, height: mode.height, fps: mode.refresh_hz, bitrate_kbps, idr_secs: self.idr_secs };
         Ok((Box::new(crate::capture::TestPattern::new(mode.width, mode.height)), Box::new(crate::encode::OpenH264Encoder::new(cfg)?)))
     }
 }

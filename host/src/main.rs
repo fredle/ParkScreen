@@ -31,7 +31,7 @@ async fn main() {
     let mut agent = Agent {
         tx: tx.clone(),
         allow,
-        handler: WebRtcHandler::new(NullDisplay::default(), std::sync::Arc::new(SoftwareMedia)),
+        handler: WebRtcHandler::new(NullDisplay::default(), std::sync::Arc::new(SoftwareMedia::default())),
         on_pair_code: Box::new(|code| println!("Pairing code (valid 5 min): {code}")),
     };
     if std::env::args().any(|a| a == "--pair") {

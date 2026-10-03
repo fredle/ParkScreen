@@ -48,6 +48,7 @@ impl Write for Sink {
 struct Car {
     gathered: mpsc::Sender<()>,
     sink: Sink,
+    track: Arc<Mutex<Option<Arc<dyn TrackRemote>>>>,
 }
 
 #[async_trait::async_trait]
@@ -58,6 +59,7 @@ impl PeerConnectionEventHandler for Car {
         }
     }
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        *self.track.lock().unwrap() = Some(track.clone());
         let sink = self.sink.clone();
         tokio::spawn(async move {
             let mut w = H26xWriter::new(sink, false);
@@ -92,11 +94,12 @@ async fn streams_decodable_h264() {
     let registry = register_default_interceptors(Registry::new(), &mut me).unwrap();
     let (gtx, mut grx) = mpsc::channel(1);
     let sink = Sink::default();
+    let remote: Arc<Mutex<Option<Arc<dyn TrackRemote>>>> = Default::default();
     let pc = PeerConnectionBuilder::new()
         .with_configuration(RTCConfigurationBuilder::new().build())
         .with_media_engine(me)
         .with_interceptor_registry(registry)
-        .with_handler(Arc::new(Car { gathered: gtx, sink: sink.clone() }))
+        .with_handler(Arc::new(Car { gathered: gtx, sink: sink.clone(), track: remote.clone() }))
         .with_runtime(default_runtime().unwrap())
         .with_udp_addrs(vec![format!("{}:0", local_ip())])
         .build()
@@ -114,7 +117,7 @@ async fn streams_decodable_h264() {
     let offer_sdp = pc.local_description().await.unwrap().sdp;
 
     // ---- host side (sender under test) ----
-    let mut host = WebRtcHandler::new(NullDisplay::default(), Arc::new(SoftwareMedia));
+    let mut host = WebRtcHandler::new(NullDisplay::default(), Arc::new(SoftwareMedia { idr_secs: 30 }));
     host.on_signal("car", serde_json::json!({"kind":"viewport","w":640,"h":360,"fps":30})).await;
     let out = host.on_signal("car", serde_json::json!({"kind":"offer","sdp":offer_sdp})).await;
     let answer = out[0]["sdp"].as_str().expect("answer").to_string();
@@ -144,6 +147,35 @@ async fn streams_decodable_h264() {
         }
     }
     assert_eq!(decoded, Some((640, 360)), "no decodable frame received");
+
+    // ---- PLI from the car must produce a fresh IDR well before the 2 s periodic one ----
+    let track = remote.lock().unwrap().clone().expect("remote track");
+    let ssrc = *track.ssrcs().await.first().unwrap();
+    let idrs = |d: &[u8]| d.windows(4).filter(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5).count();
+    // Let the initial IDR settle, then sample right after a PLI.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = idrs(&sink.0.lock().unwrap());
+    let sent_at = std::time::Instant::now();
+    track
+        .write_rtcp(vec![Box::new(rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication { sender_ssrc: 0, media_ssrc: ssrc })])
+        .await
+        .unwrap();
+    let mut got = false;
+    while sent_at.elapsed() < Duration::from_millis(1500) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if idrs(&sink.0.lock().unwrap()) > before {
+            got = true;
+            break;
+        }
+    }
+    assert!(got, "no IDR within 1.5 s of PLI");
+
+    // ---- live bitrate change: stream keeps flowing and decodable ----
+    host.on_signal("car", serde_json::json!({"kind":"bitrate","kbps":1500})).await;
+    let len = sink.0.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(sink.0.lock().unwrap().len() > len, "stream stalled after bitrate change");
+
     host.on_car_offline("car").await;
     assert!(host.display.current.is_none());
 }
