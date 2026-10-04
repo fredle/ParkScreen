@@ -24,6 +24,20 @@ jobs:
           "iddcx.h:"; Get-ChildItem "$kits\Include" -Recurse -Filter iddcx.h -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           "IddCxStub.lib:"; Get-ChildItem "$kits\Lib" -Recurse -Filter IddCxStub.lib -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           "WDK toolsets:"; Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+      - name: Install the WDK Visual Studio extension
+        # The kit is on the image but its MSBuild toolset (WindowsUserModeDriver10.0) is only wired
+        # into Visual Studio by the extension that ships inside the kit.
+        shell: pwsh
+        run: |
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\Vsix"
+          Get-ChildItem $kits -Recurse -Filter *.vsix | Select-Object -ExpandProperty FullName
+          $vsix = Get-ChildItem "$kits\VS2022" -Recurse -Filter WDK.vsix | Sort-Object FullName | Select-Object -Last 1
+          if (-not $vsix) { throw "WDK.vsix not found under $kits" }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installerswhere.exe" -latest -property installationPath
+          Write-Host "Installing $($vsix.FullName) into $vs"
+          $p = Start-Process "$vs\Common7\IDE\VSIXInstaller.exe" -ArgumentList "/quiet","/admin","`"$($vsix.FullName)`"" -Wait -PassThru
+          Write-Host "VSIXInstaller exit code $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "VSIXInstaller failed" }
       - name: Evaluated driver properties
         continue-on-error: true
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:PlatformToolset,WindowsTargetPlatformVersion,WDKContentRoot,UMDF_VERSION_MAJOR,UMDF_VERSION_MINOR,IncludePath,DriverType
