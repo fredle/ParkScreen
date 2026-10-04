@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
+      - name: Evaluated driver properties
+        continue-on-error: true
+        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:WdkRoot,WdkSdkVersion,TargetPlatformVersion,WindowsSdkDir,IncludePath,LibraryPath
       - name: Build driver
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
       - name: Stage the driver package

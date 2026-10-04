@@ -45,8 +45,12 @@
     <GenerateManifest>false</GenerateManifest>
     <UmdfVersion>2.25</UmdfVersion>
     <IddCxVersion>1.4</IddCxVersion>
-    <IncludePath>$(WDKContentRoot)Include\wdf\umdf\$(UmdfVersion);$(WDKContentRoot)Include\$(TargetPlatformVersion)\um\iddcx\$(IddCxVersion);$(IncludePath)</IncludePath>
-    <LibraryPath>$(WDKContentRoot)Lib\wdf\umdf\x64\$(UmdfVersion);$(WDKContentRoot)Lib\$(TargetPlatformVersion)\um\x64\iddcx\$(IddCxVersion);$(LibraryPath)</LibraryPath>
+    <WdkRoot>$(WindowsSdkDir)</WdkRoot>
+    <WdkRoot Condition="'$(WdkRoot)'==''">$(MSBuildProgramFiles32)\Windows Kits\10\</WdkRoot>
+    <WdkSdkVersion>$(TargetPlatformVersion)</WdkSdkVersion>
+    <WdkSdkVersion Condition="'$(WdkSdkVersion)'=='' or '$(WdkSdkVersion)'=='10.0'">10.0.26100.0</WdkSdkVersion>
+    <IncludePath>$(WdkRoot)Include\wdf\umdf\$(UmdfVersion);$(WdkRoot)Include\$(WdkSdkVersion)\um\iddcx\$(IddCxVersion);$(IncludePath)</IncludePath>
+    <LibraryPath>$(WdkRoot)Lib\wdf\umdf\x64\$(UmdfVersion);$(WdkRoot)Lib\$(WdkSdkVersion)\um\x64\iddcx\$(IddCxVersion);$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
