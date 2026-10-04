@@ -60,7 +60,7 @@ fn icon() -> Icon {
     let white = [255, 255, 255, 255];
     for y in 8..21 {
         for x in 6..26 {
-            if x < 8 || x >= 24 || y < 10 || y >= 19 {
+            if !(8..24).contains(&x) || !(10..19).contains(&y) {
                 put(x, y, white);
             }
         }
