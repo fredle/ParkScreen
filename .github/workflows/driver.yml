@@ -14,12 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Evaluated driver properties
-        continue-on-error: true
-        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:WdkRoot,WdkSdkVersion,TargetPlatformVersion,WindowsSdkDir,IncludePath,LibraryPath
       - name: Build driver
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
       - name: Stage the driver package
+        # stampinf fills in the architecture, driver date and version, and the UMDF version
+        # ($UMDFVERSION$). The package is not signed or catalogued: signing is a separate step.
         shell: pwsh
         run: |
           $out = "driver/ParkScreenIdd/x64/Release"
@@ -27,6 +26,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pkg | Out-Null
           Copy-Item "$out/ParkScreenIdd.dll" $pkg
           Copy-Item "driver/ParkScreenIdd/ParkScreenIdd.inf" $pkg
+          $stampinf = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin") -Recurse -Filter stampinf.exe |
+            Where-Object { $_.FullName -match "x64" } | Sort-Object FullName | Select-Object -Last 1
+          if (-not $stampinf) { throw "stampinf.exe not found" }
+          & $stampinf.FullName -f "$pkg/ParkScreenIdd.inf" -d "*" -a amd64 -v "*" -u 2.25.0
+          if ($LASTEXITCODE -ne 0) { throw "stampinf failed" }
+          Get-Content "$pkg/ParkScreenIdd.inf" | Select-String "DriverVer", "UmdfLibraryVersion"
           Get-ChildItem $pkg | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:

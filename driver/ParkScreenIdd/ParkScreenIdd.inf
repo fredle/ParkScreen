@@ -8,7 +8,7 @@ Class       = Display
 ClassGuid   = {4D36E968-E325-11CE-BFC1-08002BE10318}
 Provider    = %ManufacturerName%
 CatalogFile = ParkScreenIdd.cat
-DriverVer   = ; set by the build (stampinf)
+DriverVer   =
 PnpLockdown = 1
 
 [DestinationDirs]
