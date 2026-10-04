@@ -6,6 +6,8 @@ import { attachInput } from "./input";
 
 const ui = document.getElementById("ui")!;
 const video = document.getElementById("v") as HTMLVideoElement;
+const stopBtn = document.getElementById("stop") as HTMLButtonElement;
+stopBtn.onclick = () => disconnect();
 const KEY = "ps_token";
 const store = {
   get: () => { try { return localStorage.getItem(KEY); } catch { return null; } },
@@ -36,6 +38,16 @@ function teardown() {
   stopReporting?.();
   detachInput?.();
   video.hidden = true;
+  stopBtn.hidden = true;
+}
+
+/** Close the stream from the car and stay disconnected until the user taps Reconnect. */
+function disconnect() {
+  teardown();
+  sig?.close();
+  sig = undefined;
+  lastHost = undefined;
+  status("Disconnected.");
 }
 
 /** Forget this car's pairing and go back to the code screen. */
@@ -102,6 +114,7 @@ function startSession(hostId: string) {
       attempts = 0;
       ui.hidden = true;
       video.hidden = false;
+      stopBtn.hidden = false;
       video.play().catch(() => {});
     } else if (state === "disconnected") {
       // Usually a blip that heals by itself: give it a few seconds before giving up.
@@ -123,6 +136,7 @@ function connectionLost(hostId: string) {
   stopReporting?.();
   detachInput?.();
   video.hidden = true;
+  stopBtn.hidden = true;
   if (attempts < 3) {
     attempts++;
     status(`Connection lost. Retrying (${attempts} of 3)…`);

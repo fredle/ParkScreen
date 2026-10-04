@@ -173,7 +173,7 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let dup = CheckMenuItem::new("Duplicate: car shows your main screen", true, true, None);
         let ext = CheckMenuItem::new(EXTEND_LABEL, true, false, None);
         let pause = CheckMenuItem::new("Pause streaming (disconnect cars)", true, false, None);
-        let reset = MenuItem::new("Reset connection", true, None);
+        let reset = MenuItem::new("Reset connection (stays paused)", true, None);
         let driver_item = MenuItem::new(driver_label(), true, None);
         let site = MenuItem::new("Open ParkScreen website", true, None);
         let update = MenuItem::new("Check for updates", true, None);
@@ -221,10 +221,9 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
                 } else if ev.id == pause_id {
                     crate::status::set_paused(pause.is_checked());
                 } else if ev.id == reset_id {
-                    // Drop every stream and sign in to the server again; cars reconnect by themselves.
-                    pause.set_checked(false);
-                    crate::status::set_paused(false);
-                    crate::status::request_close_sessions();
+                    // Drop every stream and sign in to the server again; cars stay off until streaming is resumed.
+                    pause.set_checked(true);
+                    crate::status::set_paused(true);
                     crate::status::request_reconnect();
                 } else if ev.id == driver_id {
                     driver_action();
