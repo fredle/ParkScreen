@@ -4,14 +4,26 @@ on:
     paths: [ "driver/**", ".github/workflows/driver.yml" ]
   pull_request:
     paths: [ "driver/**", ".github/workflows/driver.yml" ]
+  workflow_dispatch:
 jobs:
   build:
     # The display driver needs Visual Studio and the Windows Driver Kit (WDK). The windows-2022
-    # runner image ships with both; check the build log if the image changes.
+    # runner image has VS and the WDK Visual Studio extension, but not necessarily the WDK headers
+    # and libraries for the installed Windows SDK, so the job checks and installs them.
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
+      - name: What the runner has
+        shell: pwsh
+        run: |
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          "SDK include versions:"; Get-ChildItem "$kits\Include" -Directory | Select-Object -ExpandProperty Name
+          "wudfwdm.h:"; Get-ChildItem "$kits\Include" -Recurse -Filter wudfwdm.h -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          "iddcx.h:"; Get-ChildItem "$kits\Include" -Recurse -Filter iddcx.h -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          "IddCxStub.lib:"; Get-ChildItem "$kits\Lib" -Recurse -Filter IddCxStub.lib -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          "WDK toolsets:"; Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          winget --version
       - name: Build driver
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
       - uses: actions/upload-artifact@v4
