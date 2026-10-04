@@ -7,10 +7,30 @@ an extra screen. When the car leaves, or the agent exits or crashes, the monitor
 
 ## Status
 
-Written but **not yet built or run**. The machine it was written on has no Visual Studio or WDK.
-Expect compile errors on the first build (IddCx structure names are the likeliest). The Rust side
-(`host/src/idd.rs`) is built and tested, including a test that the IOCTL codes and GUID match
-`ParkScreenIdd/Ioctl.h`.
+**Builds in CI, never run.** The `driver` workflow (windows-2022, WDK 10.0.26100, IddCx 1.4,
+UMDF 2.25) compiles and links `ParkScreenIdd.dll`, stamps the INF with `stampinf`, and uploads the
+unsigned package as the `parkscreen-idd-unsigned` artifact (DLL, INF, PDB).
+
+The project is a plain `v143` DLL project that adds the UMDF and IddCx include and library paths
+itself, because the runner has the WDK headers and libraries but not the kit's Visual Studio
+extension (the `WindowsUserModeDriver10.0` toolset). It links `WdfDriverStubUm.lib` and
+`IddCxStub.lib` with entry point `FxDriverEntryUm`; the linker warns `LNK4216: Exported entry
+point FxDriverEntryUm`, which has not been checked against a real install.
+
+Still untested, because it has never been installed or run on a machine:
+
+- Installing the package (`install.ps1`) and whether the device starts. Check the INF with
+  `infverif` and Device Manager first.
+- Signing. The package has no catalog and is unsigned, so Windows will refuse it unless
+  test-signing is on (`bcdedit /set testsigning on`, then sign with a test certificate) or it is
+  signed for release (Azure Trusted Signing handles the DLL and catalog, but a display driver
+  intended for other people's PCs normally also needs Microsoft attestation signing through
+  Partner Center).
+- The access list on the control interface, now set in the INF (`HKR,,Security`) because UMDF has
+  no `WdfDeviceInitAssignSDDLString`.
+
+The Rust side (`host/src/idd.rs`) is built and tested, including a test that the IOCTL codes and
+GUID match `ParkScreenIdd/Ioctl.h`.
 
 ## Layout
 
