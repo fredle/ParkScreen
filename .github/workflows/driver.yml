@@ -7,38 +7,28 @@ on:
   workflow_dispatch:
 jobs:
   build:
-    # The display driver needs Visual Studio and the Windows Driver Kit (WDK). The windows-2022
-    # runner image has Visual Studio and the kit itself (headers and libraries), but the kit's
-    # MSBuild toolset (WindowsUserModeDriver10.0) is only wired into Visual Studio by the extension
-    # that ships inside the kit, so the job installs that first.
+    # The display driver needs Visual Studio and the Windows Driver Kit (WDK) headers and libraries.
+    # The windows-2022 runner image has both, but not the kit's Visual Studio extension, so the
+    # project is a plain DLL project that adds the UMDF and IddCx paths itself (see the vcxproj).
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Install the WDK Visual Studio extension
-        shell: pwsh
-        run: |
-          $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Vsix"
-          Get-ChildItem $kits -Recurse -Filter *.vsix | Select-Object -ExpandProperty FullName
-          $vsix = Get-ChildItem (Join-Path $kits "VS2022") -Recurse -Filter WDK.vsix | Sort-Object FullName | Select-Object -Last 1
-          if (-not $vsix) { throw "WDK.vsix not found under $kits" }
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -property installationPath
-          $installer = Join-Path $vs "Common7\IDE\VSIXInstaller.exe"
-          Write-Host "Installing $($vsix.FullName) into $vs"
-          $p = Start-Process $installer -ArgumentList "/quiet", "/admin", "`"$($vsix.FullName)`"" -Wait -PassThru
-          Write-Host "VSIXInstaller exit code $($p.ExitCode)"
-          if ($p.ExitCode -ne 0) { throw "VSIXInstaller failed" }
-      - name: Evaluated driver properties
-        continue-on-error: true
-        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:PlatformToolset,WDKContentRoot,UMDF_VERSION_MAJOR,UMDF_VERSION_MINOR,IncludePath,DriverType
       - name: Build driver
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+      - name: Stage the driver package
+        shell: pwsh
+        run: |
+          $out = "driver/ParkScreenIdd/x64/Release"
+          $pkg = "$out/ParkScreenIdd"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item "$out/ParkScreenIdd.dll" $pkg
+          Copy-Item "driver/ParkScreenIdd/ParkScreenIdd.inf" $pkg
+          Get-ChildItem $pkg | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: parkscreen-idd-unsigned
           path: |
             driver/ParkScreenIdd/x64/Release/ParkScreenIdd/
-            driver/ParkScreenIdd/x64/Release/ParkScreenIdd.dll
             driver/ParkScreenIdd/x64/Release/ParkScreenIdd.pdb
-          if-no-files-found: warn
+          if-no-files-found: error

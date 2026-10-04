@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Needs Visual Studio 2022 with the C++ desktop workload and the Windows Driver Kit (WDK) +
-     its Visual Studio extension. Build: msbuild ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -->
+<!-- Needs Visual Studio 2022 with the C++ desktop workload and the Windows Driver Kit (WDK) headers
+     and libraries. No Visual Studio extension is needed: this is a plain DLL project that adds the
+     UMDF and IddCx include and library paths itself, so it also builds on CI runners that only
+     have the kit installed.
+     Build: msbuild ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -->
 <Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Release|x64">
@@ -26,12 +29,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
-    <PlatformToolset>WindowsUserModeDriver10.0</PlatformToolset>
-    <DriverType>UMDF</DriverType>
-    <DriverTargetPlatform>Universal</DriverTargetPlatform>
-    <TargetVersion>Windows10</TargetVersion>
-    <UMDF_VERSION_MAJOR>2</UMDF_VERSION_MAJOR>
-    <UMDF_VERSION_MINOR>25</UMDF_VERSION_MINOR>
+    <PlatformToolset>v143</PlatformToolset>
     <SpectreMitigation>false</SpectreMitigation>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -44,6 +42,11 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
     <TargetName>ParkScreenIdd</TargetName>
+    <GenerateManifest>false</GenerateManifest>
+    <UmdfVersion>2.25</UmdfVersion>
+    <IddCxVersion>1.4</IddCxVersion>
+    <IncludePath>$(WDKContentRoot)Include\wdf\umdf\$(UmdfVersion);$(WDKContentRoot)Include\$(TargetPlatformVersion)\um\iddcx\$(IddCxVersion);$(IncludePath)</IncludePath>
+    <LibraryPath>$(WDKContentRoot)Lib\wdf\umdf\x64\$(UmdfVersion);$(WDKContentRoot)Lib\$(TargetPlatformVersion)\um\x64\iddcx\$(IddCxVersion);$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -51,10 +54,13 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <!-- IddCx 1.4: Windows 10 2004 and later. -->
-      <PreprocessorDefinitions>IDDCX_VERSION_MAJOR=1;IDDCX_VERSION_MINOR=4;IDD_IS_FUNCTION_PRESENT_CHECKED;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>IDDCX_VERSION_MAJOR=1;IDDCX_VERSION_MINOR=4;IDD_IS_FUNCTION_PRESENT_CHECKED;UMDF_VERSION_MAJOR=2;UMDF_VERSION_MINOR=25;UMDF_USING_NTSTATUS;_AMD64_;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;ole32.lib;IddCxStub.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;ole32.lib;ntdll.lib;WdfDriverStubUm.lib;IddCxStub.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- UMDF 2 entry point from WdfDriverStubUm.lib; it calls DriverEntry. -->
+      <EntryPointSymbol>FxDriverEntryUm</EntryPointSymbol>
+      <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -67,7 +73,7 @@
     <ClInclude Include="Ioctl.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="ParkScreenIdd.inf" />
+    <None Include="ParkScreenIdd.inf" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
