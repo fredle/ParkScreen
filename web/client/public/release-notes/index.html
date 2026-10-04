@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
 <title>ParkScreen release notes</title>
 <meta name="description" content="What changed in each ParkScreen release for Windows.">
 <link rel="stylesheet" href="/site.css">
@@ -15,7 +16,17 @@
   <a class="cta" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download the latest</a>
 
   <article class="rel">
-    <h2>0.1.8 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <h2>0.1.9 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li><strong>New app icon</strong>: a monitor with a car on it, in Explorer, the taskbar, the installer and the tray.</li>
+      <li>Tray menu: <strong>Reset connection</strong> drops every stream and signs in to the server again; cars reconnect by themselves.</li>
+      <li>Tray menu: <strong>Pause streaming</strong> disconnects every car and refuses new connections until you untick it.</li>
+      <li>Car page: when the connection drops it now retries three times by itself, and shows <strong>Reconnect</strong> and <strong>Reset pairing</strong> buttons so it is never stuck. Short network blips no longer show an error.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.8</h2><time datetime="2026-10-04">4 October 2026</time>
     <ul>
       <li>Tray menu: choose <strong>Duplicate</strong> (the car shows your main screen) or <strong>Extend</strong>. Extend stays greyed out until the ParkScreen display driver is installed; the driver is not released yet.</li>
       <li>Tray menu: <strong>Check for updates</strong>.</li>

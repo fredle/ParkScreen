@@ -57,6 +57,7 @@ async fn run_once(
     let (ws, _) = connect_async(url).await?;
     let (mut sink, mut stream) = ws.split();
     let mut ready = false;
+    let mut reconnect_poll = tokio::time::interval(Duration::from_millis(500));
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(30), Duration::from_secs(30));
     loop {
         tokio::select! {
@@ -80,6 +81,11 @@ async fn run_once(
             }
             Some(m) = out_rx.recv(), if ready => {
                 sink.send(Message::Text(serde_json::to_string(&m)?.into())).await?;
+            }
+            _ = reconnect_poll.tick() => {
+                if crate::status::take_reconnect() {
+                    return Ok(ready);
+                }
             }
             _ = ping.tick() => {
                 sink.send(Message::Text(serde_json::to_string(&HostToServer::Ping)?.into())).await?;

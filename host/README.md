@@ -25,7 +25,7 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
   Off by default, because it resizes a real monitor.
 - Without Windows (or for tests) the agent streams a test pattern through OpenH264.
 - Updates itself (Velopack, `updater.rs`): checks the feed every 4 hours and restarts into a newer version when no car is streaming.
-- **Tray:** with no arguments the app runs from the system tray (status, Pair a car…, open website, Start with Windows, Quit), one instance per user, no admin rights needed. `--pair` or `--no-tray` runs in a terminal instead and prints the code.
+- **Tray:** with no arguments the app runs from the system tray (status, Pair a car…, Pause streaming, Reset connection, display mode, open website, check for updates, Start with Windows, Quit), one instance per user, no admin rights needed. `--pair` or `--no-tray` runs in a terminal instead and prints the code.
 - Touch: car touches are injected as real multi-touch contacts on the shared monitor (`InjectTouchInput`); scroll uses the mouse wheel. Needs `--with-input` or a car paired with input allowed.
 
 Build from the repo root: `cargo build --release -p parkscreen-host` (needs the MSVC build

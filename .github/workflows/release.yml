@@ -89,6 +89,7 @@ jobs:
             --runtime win-x64 `
             --mainExe parkscreen-host.exe `
             --packTitle ParkScreen `
+            --icon host\assets\parkscreen.ico `
             --packAuthors "FBL Consulting Ltd" `
             --releaseNotes notes.md `
             --outputDir Releases

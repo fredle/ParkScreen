@@ -433,6 +433,9 @@ async fn stream(
 impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
     async fn on_signal(&mut self, car_id: &str, payload: Value) -> Vec<Value> {
         match payload.get("kind").and_then(Value::as_str) {
+            Some("offer") if crate::status::paused() => {
+                info!("ignoring offer: streaming is paused");
+            }
             Some("offer") => {
                 let Some(sdp) = payload.get("sdp").and_then(Value::as_str) else { return vec![] };
                 match self.answer_offer(car_id, sdp.to_string()).await {
@@ -496,6 +499,16 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
             .into_iter()
             .map(|s| RTCIceServer { urls: s.urls, username: s.username.unwrap_or_default(), credential: s.credential.unwrap_or_default() })
             .collect();
+    }
+
+    async fn close_all(&mut self) {
+        for (_, l) in self.live.drain() {
+            let _ = l.pc.close().await;
+            release(&self.injector, &l.input);
+        }
+        crate::updater::set_live_sessions(0);
+        self.viewport.clear();
+        let _ = self.display.unplug().await;
     }
 
     async fn on_car_offline(&mut self, car_id: &str) {

@@ -100,6 +100,9 @@ fn open_site() {
 }
 
 fn status_text() -> String {
+    if crate::status::paused() {
+        return "Paused: cars are disconnected".into();
+    }
     if !crate::status::online() {
         return "Offline: reconnecting to the server…".into();
     }
@@ -122,17 +125,20 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let pair = MenuItem::new("Pair a car…", true, None);
         let dup = CheckMenuItem::new("Duplicate: car shows your main screen", true, true, None);
         let ext = CheckMenuItem::new(EXTEND_LABEL, true, false, None);
+        let pause = CheckMenuItem::new("Pause streaming (disconnect cars)", true, false, None);
+        let reset = MenuItem::new("Reset connection", true, None);
         let site = MenuItem::new("Open ParkScreen website", true, None);
         let update = MenuItem::new("Check for updates", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
         let quit = MenuItem::new("Quit ParkScreen", true, None);
-        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &PredefinedMenuItem::separator(), &dup, &ext, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
-        let Ok(tray) = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("ParkScreen").with_icon(icon()).build() else {
+        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &pause, &reset, &PredefinedMenuItem::separator(), &dup, &ext, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
+        let Ok(tray) = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("ParkScreen").with_icon(Icon::from_resource(1, Some((32, 32))).unwrap_or_else(|_| icon())).build() else {
             tracing::warn!("could not create the tray icon");
             return;
         };
         let (pair_id, site_id, update_id, auto_id, quit_id) =
             (pair.id().clone(), site.id().clone(), update.id().clone(), autostart.id().clone(), quit.id().clone());
+        let (pause_id, reset_id) = (pause.id().clone(), reset.id().clone());
         let (dup_id, ext_id) = (dup.id().clone(), ext.id().clone());
         let sync_mode = |driver: bool| {
             let extend = crate::settings::chosen_mode() == crate::settings::DisplayMode::Extend && driver;
@@ -163,6 +169,14 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
                     if crate::updater::live_sessions() > 0 {
                         message("ParkScreen", "The new screen mode applies the next time a car connects.");
                     }
+                } else if ev.id == pause_id {
+                    crate::status::set_paused(pause.is_checked());
+                } else if ev.id == reset_id {
+                    // Drop every stream and sign in to the server again; cars reconnect by themselves.
+                    pause.set_checked(false);
+                    crate::status::set_paused(false);
+                    crate::status::request_close_sessions();
+                    crate::status::request_reconnect();
                 } else if ev.id == site_id {
                     open_site();
                 } else if ev.id == update_id {

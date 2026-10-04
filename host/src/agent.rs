@@ -18,6 +18,8 @@ pub trait SessionHandler: Send {
     async fn on_car_offline(&mut self, car_id: &str);
     /// STUN/TURN servers to use for sessions from now on.
     fn set_ice_servers(&mut self, _servers: Vec<IceServer>) {}
+    /// Close every live stream (tray: pause or reset connection).
+    async fn close_all(&mut self) {}
 }
 
 /// Placeholder until WebRTC lands: handles `viewport` (the only message we can act on without it).
@@ -63,8 +65,20 @@ impl<H: SessionHandler> Agent<H> {
     }
 
     pub async fn run(&mut self, mut events: UnboundedReceiver<Event>) {
-        while let Some(ev) = events.recv().await {
-            self.handle(ev).await;
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+        loop {
+            tokio::select! {
+                ev = events.recv() => match ev {
+                    Some(ev) => self.handle(ev).await,
+                    None => break,
+                },
+                _ = tick.tick() => {
+                    if crate::status::take_close_sessions() {
+                        info!("closing all streams (tray request)");
+                        self.handler.close_all().await;
+                    }
+                }
+            }
         }
     }
 
