@@ -105,6 +105,9 @@ line `ICE servers turn=true` confirms it is on. Leave them unset for STUN only.
 
 ## Releasing the host agent
 
+Before tagging, add the version to `web/client/public/release-notes/index.html` (newest first, move
+the "Latest" tag) and push to `main` so https://parkscreen.web.app/release-notes/ is current.
+
 Tag `vX.Y.Z`. `release.yml` builds `parkscreen-host.exe` (with the server URL baked in),
 signs it with Azure Trusted Signing, packs it with Velopack (deltas against the previous
 release), signs the installer and publishes the feed to https://parkscreen-releases.web.app.

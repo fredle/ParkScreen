@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ParkScreen release notes</title>
+<meta name="description" content="What changed in each ParkScreen release for Windows.">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<main style="padding-top:8vh">
+  <nav class="top"><a href="/">&larr; ParkScreen</a></nav>
+  <h1>Release notes</h1>
+  <p class="lead">What changed in each version of ParkScreen for Windows. The app updates itself, so you get these automatically.</p>
+  <a class="cta" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download the latest</a>
+
+  <article class="rel">
+    <h2>0.1.8 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li>Tray menu: choose <strong>Duplicate</strong> (the car shows your main screen) or <strong>Extend</strong>. Extend stays greyed out until the ParkScreen display driver is installed; the driver is not released yet.</li>
+      <li>Tray menu: <strong>Check for updates</strong>.</li>
+      <li>Your display choice is remembered between runs.</li>
+      <li>Service: the server can hand out relay (TURN) credentials for cars and PCs on strict networks. It is off until it is configured.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.7</h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li><strong>Touch from the car.</strong> Taps and drags on the car's screen become real multi-touch input on your PC, and scrolling uses the mouse wheel.</li>
+      <li>Touch is opt-in: start ParkScreen with <code>--with-input</code>. There is no tray switch yet.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.6</h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li><strong>System tray menu</strong>: connection status, <strong>Pair a car…</strong> (shows the code), open the website, <strong>Start with Windows</strong>, Quit.</li>
+      <li>No console window, only one copy runs at a time, and nothing needs administrator rights.</li>
+      <li>Command-line options (<code>--pair</code>, <code>list</code>, <code>--help</code>) still work from a terminal; <code>--no-tray</code> runs without the tray.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.5</h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li>New website: an introduction with a download button at parkscreen.web.app. The car page moved to <code>/car/</code>; cars that are already paired go straight to it.</li>
+      <li>The app itself is unchanged from 0.1.4.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.4</h2><time datetime="2026-10-03">3 October 2026</time>
+    <ul>
+      <li>Release packaging: every version keeps a permanent installer copy, as the Microsoft Store requires. The app is unchanged from 0.1.3.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.3</h2><time datetime="2026-10-03">3 October 2026</time>
+    <ul>
+      <li><strong>Automatic updates.</strong> The app checks for a newer version a minute after it starts and every four hours, downloads it in the background, and restarts into it once no car is streaming.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.2</h2><time datetime="2026-10-03">3 October 2026</time>
+    <ul>
+      <li>Fixed the installer pausing for about 30 seconds and logging an error while it set the app up.</li>
+      <li>Fixed pairing: asking for a code before the app had signed in to the server meant no code was ever shown.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.1</h2><time datetime="2026-10-03">3 October 2026</time>
+    <ul>
+      <li>First release that connects to the ParkScreen service out of the box. Signed installer.</li>
+      <li>Streams one monitor to the car's browser over WebRTC (H.264), with the mouse pointer drawn in, hardware encoding where available, and adaptive bitrate.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.0 <span class="tag old">Superseded</span></h2><time datetime="2026-10-03">3 October 2026</time>
+    <ul>
+      <li>First test build. It had no service address built in, so it could not pair. Use a later version.</li>
+    </ul>
+  </article>
+
+  <footer><a href="/">ParkScreen</a> &middot; <a href="/privacy/">Privacy</a> &middot; <a href="mailto:freddie@leatham.com">Contact</a></footer>
+</main>
+</body>
+</html>

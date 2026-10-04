@@ -1,0 +1,30 @@
+:root{--bg:#0b0d10;--fg:#e8eaed;--muted:#9aa0a6;--accent:#2a6df4;--card:#14171c;--line:#252a31}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.55 system-ui,sans-serif}
+main{max-width:46rem;margin:0 auto;padding:12vh 24px 8vh}
+h1{font-size:clamp(2.2rem,6vw,3.4rem);line-height:1.1;margin:0 0 .4em;letter-spacing:-.02em}
+.lead{font-size:1.25rem;color:var(--muted);margin:0 0 1.6em}
+.cta{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;font-weight:600;padding:16px 28px;border-radius:12px}
+.cta:hover{filter:brightness(1.1)}
+.cta:focus-visible,a:focus-visible{outline:3px solid #8ab4f8;outline-offset:3px}
+.sub{color:var(--muted);font-size:.9rem;margin:.8em 0 0}
+h2{font-size:1.1rem;margin:3em 0 .8em;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+ol,ul.cards{padding:0;margin:0;list-style:none;display:grid;gap:12px}
+ol{counter-reset:s}
+ul.cards li{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+ol li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px 16px 58px;position:relative}
+ol li::before{content:counter(s);position:absolute;left:18px;top:16px;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;font-weight:600;display:grid;place-items:center;font-size:.9rem}
+ul.cards li strong{display:block}
+ul.cards li span{color:var(--muted);font-size:.95rem}
+code{background:#0006;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:.9em}
+.note{border-left:3px solid #fb4;padding:4px 14px;color:#f1d28a;margin:2.4em 0 0;font-size:.95rem}
+footer{margin-top:3em;color:var(--muted);font-size:.9rem}
+a{color:#8ab4f8}
+nav.top{font-size:.95rem;margin:0 0 2.5em}
+article.rel{border-top:1px solid var(--line);padding:1.6em 0}
+article.rel h2{margin:0 0 .2em;color:var(--fg);text-transform:none;letter-spacing:0;font-size:1.5rem}
+article.rel time{color:var(--muted);font-size:.9rem}
+article.rel ul{margin:.8em 0 0;padding-left:1.2em}
+article.rel li{margin:.3em 0}
+.tag{display:inline-block;font-size:.75rem;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--accent);color:#fff;margin-left:8px;vertical-align:middle}
+.tag.old{background:#3a4048}

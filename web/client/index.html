@@ -5,46 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ParkScreen: your PC on your car's screen</title>
 <meta name="description" content="Stream a Windows monitor to your parked Tesla's browser, peer to peer, with a one-time pairing code.">
-<style>
-  :root{--bg:#0b0d10;--fg:#e8eaed;--muted:#9aa0a6;--accent:#2a6df4;--card:#14171c;--line:#252a31}
-  *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.55 system-ui,sans-serif}
-  main{max-width:46rem;margin:0 auto;padding:12vh 24px 8vh}
-  h1{font-size:clamp(2.2rem,6vw,3.4rem);line-height:1.1;margin:0 0 .4em;letter-spacing:-.02em}
-  .lead{font-size:1.25rem;color:var(--muted);margin:0 0 1.6em}
-  .cta{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;font-weight:600;padding:16px 28px;border-radius:12px}
-  .cta:hover{filter:brightness(1.1)}
-  .cta:focus-visible,a:focus-visible{outline:3px solid #8ab4f8;outline-offset:3px}
-  .sub{color:var(--muted);font-size:.9rem;margin:.8em 0 0}
-  h2{font-size:1.1rem;margin:3em 0 .8em;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-  ol{padding:0;margin:0;list-style:none;display:grid;gap:12px;counter-reset:s}
-  li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px 16px 58px;position:relative}
-  li::before{content:counter(s);position:absolute;left:18px;top:16px;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;font-weight:600;display:grid;place-items:center;font-size:.9rem}
-  code{background:#0006;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:.9em}
-  .note{border-left:3px solid #fb4;padding:4px 14px;color:#f1d28a;margin:2.4em 0 0;font-size:.95rem}
-  footer{margin-top:3em;color:var(--muted);font-size:.9rem}
-  a{color:#8ab4f8}
-</style>
+<link rel="stylesheet" href="/site.css">
 </head>
 <body>
 <main>
   <h1>Your PC, on your car's screen.</h1>
   <p class="lead">ParkScreen streams a Windows monitor to your parked Tesla's browser. Video and touch go straight between your PC and the car, never through our servers.</p>
   <a class="cta" id="dl" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download for Windows</a>
-  <p class="sub">Windows 10 or 11, 64-bit. Signed installer, updates itself.</p>
+  <p class="sub">Windows 10 or 11, 64-bit. Signed installer, updates itself. <a href="/release-notes/">Release notes</a></p>
 
   <h2>How it works</h2>
   <ol>
-    <li>Install ParkScreen on your Windows PC and leave it running.</li>
+    <li>Install ParkScreen on your Windows PC. It runs from the system tray and starts with Windows if you choose.</li>
     <li>Click the ParkScreen icon in your system tray (near the clock), choose <strong>Pair a car…</strong>, and note the 6-digit code. It is valid for 5 minutes.</li>
     <li>In your car's browser, open <a href="/car/">parkscreen.web.app/car</a> and enter the code. You only pair once.</li>
-    <li>Your PC's screen appears. For a second screen, add a virtual display driver on the PC.</li>
+    <li>Your PC's screen appears. Touch the car's screen to tap, drag and scroll (see below).</li>
   </ol>
 
-  <p class="note">Use only while parked. Tesla blocks video while the car is in gear, and ParkScreen does not work around that. Touch control from the car is available when you allow it while pairing.</p>
+  <h2>What you get</h2>
+  <ul class="cards">
+    <li><strong>Hardware-accelerated video</strong><span>H.264 from your GPU (NVENC, Quick Sync or AMF), with a software fallback. Bitrate adapts to the connection.</span></li>
+    <li><strong>Real touch</strong><span>Taps and drags from the car become multi-touch input on your PC, and scrolling works. Off until you allow it: start ParkScreen with <code>--with-input</code> (a tray switch isn't built yet).</span></li>
+    <li><strong>Duplicate or extend</strong><span>Duplicate shows your main screen on the car today. Extend, where the car is a separate screen, needs a display driver that isn't released yet; the tray option stays greyed out until it is installed.</span></li>
+    <li><strong>Private by design</strong><span>Each car pairs once with a short-lived code, and your PC only accepts cars it has paired with. Video and touch are peer to peer and never stored. <a href="/privacy/">Privacy</a></span></li>
+    <li><strong>No admin rights</strong><span>Installs for your user only, updates itself in the background, and restarts only when no car is streaming.</span></li>
+  </ul>
+
+  <p class="note">Use only while parked. Tesla blocks video while the car is in gear, and ParkScreen does not work around that.</p>
 
   <footer>
-    <a href="/car/">Already installed? Open on your car</a> &middot; <a href="/privacy/">Privacy</a> &middot; <a href="mailto:freddie@leatham.com">Contact</a>
+    <a href="/car/">Already installed? Open on your car</a> &middot; <a href="/release-notes/">Release notes</a> &middot; <a href="/privacy/">Privacy</a> &middot; <a href="mailto:freddie@leatham.com">Contact</a>
   </footer>
 </main>
 <script>
