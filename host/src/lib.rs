@@ -25,4 +25,6 @@ pub mod capture_dxgi;
 #[cfg(windows)]
 pub mod encode_mf;
 #[cfg(windows)]
+pub mod input_windows;
+#[cfg(windows)]
 pub mod windows_media;

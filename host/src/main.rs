@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(not(windows))]
 use parkscreen_host::input::NullInput;
 use parkscreen_host::{
     agent::Agent,
@@ -220,11 +221,17 @@ async fn main() {
         Arc::new(parkscreen_host::rtc_sender::SoftwareMedia::default()),
     );
 
+    #[cfg(windows)]
+    let injector: Box<dyn parkscreen_host::input::InputInjector> =
+        Box::new(parkscreen_host::input_windows::WindowsTouch::new(selector()));
+    #[cfg(not(windows))]
+    let injector: Box<dyn parkscreen_host::input::InputInjector> = Box::new(NullInput);
+
     let (tx, events) = signalling::spawn(url, identity);
     let mut handler = {
         let gate = allow.clone();
         WebRtcHandler::new(display, media)
-            .with_input(Box::new(NullInput), Arc::new(move |car| gate.lock().unwrap().input_allowed(car)))
+            .with_input(injector, Arc::new(move |car| gate.lock().unwrap().input_allowed(car)))
     };
     if let Some(k) = bitrate_kbps {
         handler.bitrate_kbps = k;
