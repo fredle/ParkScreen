@@ -1,4 +1,4 @@
-use crate::db::Db;
+use crate::{db::Db, turn::IceProvider};
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -15,6 +15,7 @@ const FAIL_WINDOW: Duration = Duration::from_secs(60);
 
 pub struct AppState {
     pub db: Db,
+    pub ice: IceProvider,
     /// Browser origins allowed to call the API and open car sockets.
     pub allowed_origins: Vec<String>,
     pub hosts: Mutex<HashMap<String, Tx>>,
@@ -27,12 +28,18 @@ impl AppState {
     pub fn new(db: Db) -> Self {
         Self {
             db,
+            ice: IceProvider::stun_only(),
             allowed_origins: vec![],
             hosts: Default::default(),
             cars: Default::default(),
             codes: Default::default(),
             failed_claims: Default::default(),
         }
+    }
+
+    pub fn with_ice(mut self, ice: IceProvider) -> Self {
+        self.ice = ice;
+        self
     }
 
     pub fn with_origins(mut self, origins: Vec<String>) -> Self {
@@ -43,7 +50,7 @@ impl AppState {
     /// A request with no Origin header (host agent, curl, tests) is allowed; a browser
     /// request must come from a listed origin.
     pub fn origin_allowed(&self, origin: Option<&str>) -> bool {
-        origin.map_or(true, |o| self.allowed_origins.iter().any(|a| a == o))
+        origin.is_none_or(|o| self.allowed_origins.iter().any(|a| a == o))
     }
 
     /// Issue a single-use 6-digit code for `host_id`, replacing any earlier one.

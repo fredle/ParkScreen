@@ -177,3 +177,30 @@ impl DisplayBackend for ExistingMonitorDisplay {
         Ok(())
     }
 }
+
+/// Follows the tray's duplicate/extend choice each time a car connects: copy the main monitor
+/// (`ExistingMonitorDisplay`) or add a ParkScreen monitor (`IddDisplay`).
+pub struct SwitchableDisplay {
+    pub duplicate: ExistingMonitorDisplay,
+    pub extend: crate::idd::IddDisplay,
+}
+
+#[async_trait]
+impl DisplayBackend for SwitchableDisplay {
+    async fn plug(&mut self, mode: Mode) -> Result<(), String> {
+        crate::settings::set_driver_present(crate::idd::driver_installed());
+        match crate::settings::display_mode() {
+            crate::settings::DisplayMode::Extend => self.extend.plug(mode).await,
+            crate::settings::DisplayMode::Duplicate => {
+                // Drop a monitor left over from an earlier extend session.
+                let _ = self.extend.unplug().await;
+                self.duplicate.plug(mode).await
+            }
+        }
+    }
+
+    async fn unplug(&mut self) -> Result<(), String> {
+        let _ = self.duplicate.unplug().await;
+        self.extend.unplug().await
+    }
+}

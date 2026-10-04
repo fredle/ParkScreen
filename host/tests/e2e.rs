@@ -33,6 +33,12 @@ async fn host_signs_in_pairs_and_gets_signals() {
     assert!(matches!(next(&mut rx).await, Event::Connected));
     assert!(state.hosts.lock().unwrap().contains_key(&host_id));
 
+    // The server hands out ICE servers right after Ready (STUN only: no TURN configured).
+    match next(&mut rx).await {
+        Event::Msg(ServerToHost::IceServers { ice_servers }) => assert!(ice_servers.iter().all(|s| s.credential.is_none()) && !ice_servers.is_empty()),
+        e => panic!("{e:?}"),
+    }
+
     // Pairing code, then a car claims it (through the shared server state).
     tx.send(protocol::HostToServer::PairStart);
     let code = match next(&mut rx).await {

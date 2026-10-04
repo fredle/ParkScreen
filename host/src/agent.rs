@@ -4,7 +4,7 @@ use crate::{
     signalling::{Event, Sender},
 };
 use async_trait::async_trait;
-use protocol::{HostToServer, ServerToHost};
+use protocol::{HostToServer, IceServer, ServerToHost};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -16,6 +16,8 @@ pub trait SessionHandler: Send {
     /// Return any payloads to send back to the car.
     async fn on_signal(&mut self, car_id: &str, payload: Value) -> Vec<Value>;
     async fn on_car_offline(&mut self, car_id: &str);
+    /// STUN/TURN servers to use for sessions from now on.
+    fn set_ice_servers(&mut self, _servers: Vec<IceServer>) {}
 }
 
 /// Placeholder until WebRTC lands: handles `viewport` (the only message we can act on without it).
@@ -91,6 +93,7 @@ impl<H: SessionHandler> Agent<H> {
                     self.tx.send(HostToServer::Signal { car_id: car_id.clone(), payload: p });
                 }
             }
+            ServerToHost::IceServers { ice_servers } => self.handler.set_ice_servers(ice_servers),
             ServerToHost::CarOffline { car_id } => self.handler.on_car_offline(&car_id).await,
             _ => {}
         }

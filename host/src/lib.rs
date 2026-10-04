@@ -19,6 +19,8 @@ pub mod tray;
 pub mod convert;
 pub mod cursor;
 pub mod monitors;
+pub mod idd;
+pub mod settings;
 
 #[cfg(windows)]
 pub mod capture_dxgi;

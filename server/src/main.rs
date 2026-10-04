@@ -4,6 +4,7 @@ use parkscreen_server::{
     persist_firestore::FirestorePersist,
     persist_sqlite::SqlitePersist,
     state::AppState,
+    turn::IceProvider,
 };
 use std::sync::Arc;
 use tracing::info;
@@ -38,7 +39,8 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .collect();
     let db = Db::open(persist_from_env().await).await.expect("open store");
-    let state = Arc::new(AppState::new(db).with_origins(origins));
+    let state = Arc::new(AppState::new(db).with_origins(origins).with_ice(IceProvider::from_env()));
+    info!(turn = state.ice.has_turn(), "ICE servers");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     info!(%addr, "parkscreen-server listening");
     axum::serve(listener, app(state)).await.unwrap();

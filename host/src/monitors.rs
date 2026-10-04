@@ -80,6 +80,10 @@ pub enum Selector {
     Index(usize),
     Name(String),
     Auto,
+    /// The main monitor.
+    Primary,
+    /// Follow the tray's duplicate/extend choice: the main monitor, or the ParkScreen display.
+    Follow,
 }
 
 impl FromStr for Selector {
@@ -112,6 +116,14 @@ pub fn select<'a>(monitors: &'a [Monitor], sel: &Selector) -> Result<&'a Monitor
                 })
                 .with_context(|| format!("no monitor matching '{n}'"))
         }
+        Selector::Primary => monitors.iter().find(|m| m.primary).context("no primary monitor found"),
+        Selector::Follow => match crate::settings::display_mode() {
+            crate::settings::DisplayMode::Duplicate => select(monitors, &Selector::Primary),
+            crate::settings::DisplayMode::Extend => monitors
+                .iter()
+                .find(|m| m.friendly_name.to_ascii_lowercase().contains("parkscreen"))
+                .context("the ParkScreen display is not active"),
+        },
         Selector::Auto => monitors
             .iter()
             .find(|m| m.is_virtual())

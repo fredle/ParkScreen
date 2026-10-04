@@ -403,7 +403,8 @@ in `deploy/README.md`.
 **TURN for different networks (Phase 4):** neither Firebase nor Cloud Run can relay WebRTC
 media. Options: **Cloudflare Realtime TURN** (managed, pay per GB, free monthly allowance)
 or `coturn` on a small VM with UDP 3478 open. The server hands out short-lived TURN
-credentials per session.
+credentials to the host and the car when each connects (implemented for Cloudflare Realtime
+TURN in `server/src/turn.rs`, switched on by `CF_TURN_KEY_ID` / `CF_TURN_API_TOKEN`).
 
 ### 6.4 Pairing and auth
 - **Host identity:** on first run the host agent generates an Ed25519 key
@@ -551,7 +552,7 @@ See §5.3.
 
 ### Later: performance and v2
 - [ ] Driver Stage B (shared-texture frames, dirty rectangles).
-- [ ] TURN for different networks; audio; multiple monitors; WebCodecs
+- [x] TURN for different networks (Cloudflare; needs a key to be switched on); audio; multiple monitors; WebCodecs
       experiment; HEVC/AV1 if the car supports them.
 
 ---

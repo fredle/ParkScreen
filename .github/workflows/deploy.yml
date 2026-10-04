@@ -38,7 +38,7 @@ jobs:
             --max-instances=1 \
             --concurrency=1000 \
             --timeout=3600 \
-            --set-env-vars "STORE=firestore,FIRESTORE_PROJECT=${{ vars.FIREBASE_PROJECT_ID }},ALLOWED_ORIGINS=https://parkscreen.web.app"
+            --set-env-vars "STORE=firestore,FIRESTORE_PROJECT=${{ vars.FIREBASE_PROJECT_ID }},ALLOWED_ORIGINS=https://parkscreen.web.app,CF_TURN_KEY_ID=${{ vars.CF_TURN_KEY_ID }},CF_TURN_API_TOKEN=${{ secrets.CF_TURN_API_TOKEN }}"
 
       - name: Look up the server URL
         id: server

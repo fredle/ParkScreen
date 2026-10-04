@@ -1,4 +1,4 @@
-import type { Signal, Stats } from "./protocol";
+import type { IceServer, Signal, Stats } from "./protocol";
 import type { Signalling } from "./signalling";
 
 /** Receive-only WebRTC session to a host. The car creates the offer. */
@@ -8,8 +8,8 @@ export class Session {
   private input?: RTCDataChannel;
   private pending: RTCIceCandidateInit[] = [];
   private remoteSet = false;
-  constructor(private sig: Signalling, private hostId: string, private video: HTMLVideoElement, onState: (s: RTCPeerConnectionState) => void) {
-    this.pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] });
+  constructor(private sig: Signalling, private hostId: string, private video: HTMLVideoElement, iceServers: IceServer[], onState: (s: RTCPeerConnectionState) => void) {
+    this.pc = new RTCPeerConnection({ iceServers });
     this.pc.onconnectionstatechange = () => onState(this.pc.connectionState);
     this.pc.onicecandidate = (e) => this.send({ kind: "ice", candidate: e.candidate ? e.candidate.toJSON() : null });
     this.pc.ontrack = (e) => {

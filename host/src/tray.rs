@@ -1,7 +1,8 @@
 //! System tray icon and menu (Windows). Runs on its own thread with a Win32 message pump.
 //! Nothing here needs administrator rights: the icon, a user-local mutex and the HKCU Run key.
 //!
-//! Menu: connection status, "Pair a car…", "Open ParkScreen website", "Start with Windows", "Quit".
+//! Menu: connection status, "Pair a car…", the screen mode (duplicate or extend), "Open ParkScreen website",
+//! "Check for updates", "Start with Windows", "Quit".
 
 use std::{os::windows::process::CommandExt, process::Command, thread, time::Duration};
 use tray_icon::{
@@ -109,6 +110,9 @@ fn status_text() -> String {
     }
 }
 
+const EXTEND_LABEL: &str = "Extend: car is a second screen";
+const EXTEND_MISSING: &str = "Extend: car is a second screen (needs the display driver)";
+
 /// Starts the tray on its own thread. `request_pair` asks the server for a pairing code; the code
 /// arrives through the agent's `on_pair_code` callback.
 pub fn spawn(request_pair: impl Fn() + Send + 'static) {
@@ -116,16 +120,31 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let menu = Menu::new();
         let status = MenuItem::new(status_text(), false, None);
         let pair = MenuItem::new("Pair a car…", true, None);
+        let dup = CheckMenuItem::new("Duplicate: car shows your main screen", true, true, None);
+        let ext = CheckMenuItem::new(EXTEND_LABEL, true, false, None);
         let site = MenuItem::new("Open ParkScreen website", true, None);
+        let update = MenuItem::new("Check for updates", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
         let quit = MenuItem::new("Quit ParkScreen", true, None);
-        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &site, &autostart, &PredefinedMenuItem::separator(), &quit]);
+        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &PredefinedMenuItem::separator(), &dup, &ext, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
         let Ok(tray) = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("ParkScreen").with_icon(icon()).build() else {
             tracing::warn!("could not create the tray icon");
             return;
         };
-        let (pair_id, site_id, auto_id, quit_id) = (pair.id().clone(), site.id().clone(), autostart.id().clone(), quit.id().clone());
+        let (pair_id, site_id, update_id, auto_id, quit_id) =
+            (pair.id().clone(), site.id().clone(), update.id().clone(), autostart.id().clone(), quit.id().clone());
+        let (dup_id, ext_id) = (dup.id().clone(), ext.id().clone());
+        let sync_mode = |driver: bool| {
+            let extend = crate::settings::chosen_mode() == crate::settings::DisplayMode::Extend && driver;
+            dup.set_checked(!extend);
+            ext.set_checked(extend);
+            ext.set_enabled(driver);
+            ext.set_text(if driver { EXTEND_LABEL } else { EXTEND_MISSING });
+        };
+        let mut driver = crate::settings::driver_present();
+        sync_mode(driver);
         let mut last = String::new();
+        let mut last_check = std::time::Instant::now();
         loop {
             unsafe {
                 let mut msg = MSG::default();
@@ -137,12 +156,30 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
             while let Ok(ev) = MenuEvent::receiver().try_recv() {
                 if ev.id == pair_id {
                     request_pair();
+                } else if ev.id == dup_id || ev.id == ext_id {
+                    let mode = if ev.id == ext_id { crate::settings::DisplayMode::Extend } else { crate::settings::DisplayMode::Duplicate };
+                    crate::settings::set_display_mode(mode);
+                    sync_mode(driver);
+                    if crate::updater::live_sessions() > 0 {
+                        message("ParkScreen", "The new screen mode applies the next time a car connects.");
+                    }
                 } else if ev.id == site_id {
                     open_site();
+                } else if ev.id == update_id {
+                    crate::updater::check_now(|text| message("ParkScreen updates", text));
                 } else if ev.id == auto_id {
                     set_autostart(autostart.is_checked());
                 } else if ev.id == quit_id {
                     std::process::exit(0);
+                }
+            }
+            if last_check.elapsed() > Duration::from_secs(5) {
+                last_check = std::time::Instant::now();
+                let now = crate::idd::driver_installed();
+                crate::settings::set_driver_present(now);
+                if now != driver {
+                    driver = now;
+                    sync_mode(driver);
                 }
             }
             let text = status_text();

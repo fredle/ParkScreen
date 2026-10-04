@@ -5,7 +5,7 @@ one monitor to the Tesla browser over WebRTC (H.264). See `../PLAN.md` §5.
 
 ```
 parkscreen-host [--pair] [--with-input] [--bitrate 12M]
-                [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
+                [--display duplicate|extend] [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
 parkscreen-host list
 parkscreen-host set-mode --monitor 2 1920x1200@60
 ```
@@ -14,7 +14,11 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
   else `http://127.0.0.1:8080` for a local `parkscreen-server`). `--pair` prints a pairing code.
 - **Capture:** DXGI Desktop Duplication of the chosen monitor, with the pointer composited in
   (`capture_dxgi`, `cursor`). `--monitor auto` prefers a monitor whose name looks virtual.
-  Install a virtual display driver (e.g. Virtual Display Driver) to get a monitor to extend onto.
+- **Duplicate or extend:** the tray menu chooses between *Duplicate* (the car shows your main
+  monitor) and *Extend* (the car is a second screen, added by the ParkScreen display driver in
+  `../driver/`). The choice is saved in `display-mode.txt` and applies the next time a car connects.
+  Extend is greyed out until the driver is installed. `--display` sets it from the command line;
+  `--monitor` overrides both and streams a specific monitor.
 - **Encode:** a Media Foundation hardware encoder (NVENC, Quick Sync, AMF) with OpenH264 as the
   fallback (`encode_mf`, `encode`), BT.709 either way (`convert`). `--encoder` forces one.
 - **`--match-viewport`** switches the chosen monitor to the car's screen size when it connects.

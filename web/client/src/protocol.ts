@@ -1,6 +1,8 @@
 // Mirrors protocol/src/lib.rs (hand-written for now; ts-rs generation is planned).
 export type HostStatus = { host_id: string; online: boolean };
+export type IceServer = { urls: string[]; username?: string; credential?: string };
 export type ServerToCar =
+  | { type: "ice_servers"; ice_servers: IceServer[] }
   | { type: "hosts"; hosts: HostStatus[] }
   | { type: "host_online"; host_id: string }
   | { type: "host_offline"; host_id: string }

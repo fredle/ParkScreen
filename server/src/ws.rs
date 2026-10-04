@@ -72,6 +72,7 @@ pub async fn host_socket(socket: WebSocket, state: Arc<AppState>) {
     state.hosts.lock().unwrap().insert(host_id.clone(), tx.clone());
     info!(%host_id, "host online");
     send(&tx, &ServerToHost::Ready);
+    send(&tx, &ServerToHost::IceServers { ice_servers: state.ice.servers().await });
     // Tell paired cars that are already connected.
     for car_id in state.db.cars_for_host(&host_id) {
         if let Some(c) = state.cars.lock().unwrap().get(&car_id) {
@@ -144,6 +145,7 @@ pub async fn car_socket(socket: WebSocket, state: Arc<AppState>) {
         let hosts = state.hosts.lock().unwrap();
         paired.iter().map(|h| HostStatus { host_id: h.clone(), online: hosts.contains_key(h) }).collect()
     };
+    send(&tx, &ServerToCar::IceServers { ice_servers: state.ice.servers().await });
     send(&tx, &ServerToCar::Hosts { hosts: statuses });
     for h in &paired {
         if let Some(ht) = state.hosts.lock().unwrap().get(h) {

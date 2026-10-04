@@ -93,6 +93,16 @@ Server environment: `STORE` (`sqlite` default, `firestore`, `memory`), `DATABASE
 `FIRESTORE_PROJECT`, `ALLOWED_ORIGINS` (comma separated), `LISTEN` or `PORT`.
 `FIRESTORE_EMULATOR_HOST` is honoured for local Firestore.
 
+### TURN (cars and PCs on different networks)
+
+Without TURN the server hands out STUN only, which fails behind symmetric NATs, CGNAT and
+UDP-blocking networks. To add a relay, create a Cloudflare Realtime TURN key (Cloudflare
+dashboard, Realtime, TURN) and set a repository variable `CF_TURN_KEY_ID` and secret
+`CF_TURN_API_TOKEN`; the deploy workflow passes them to Cloud Run (as plain environment
+variables, so use a key that only has TURN access). The server mints 6-hour credentials, caches
+them for an hour, and sends them to the host and the car when each connects. The startup log
+line `ICE servers turn=true` confirms it is on. Leave them unset for STUN only.
+
 ## Releasing the host agent
 
 Tag `vX.Y.Z`. `release.yml` builds `parkscreen-host.exe` (with the server URL baked in),

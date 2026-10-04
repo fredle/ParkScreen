@@ -217,11 +217,13 @@ pub struct WebRtcHandler<D: DisplayBackend> {
     pub limits: Limits,
     /// Overrides the address to bind UDP on (default: `local_ip()`).
     pub bind_ip: Option<String>,
+    /// STUN/TURN servers; the signalling server replaces these with TURN-enabled ones.
+    ice_servers: Vec<RTCIceServer>,
 }
 
 impl<D: DisplayBackend> WebRtcHandler<D> {
     pub fn new(display: D, media: Arc<dyn MediaFactory>) -> Self {
-        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), injector: Arc::new(Mutex::new(Box::new(NullInput))), input_gate: Arc::new(|_| false), bitrate_kbps: 12_000, limits: Limits::default(), bind_ip: None }
+        Self { display, media, viewport: HashMap::new(), live: HashMap::new(), injector: Arc::new(Mutex::new(Box::new(NullInput))), input_gate: Arc::new(|_| false), bitrate_kbps: 12_000, limits: Limits::default(), bind_ip: None, ice_servers: vec![RTCIceServer { urls: vec!["stun:stun.cloudflare.com:3478".into()], ..Default::default() }] }
     }
 
     /// Enable input injection. `gate(car_id)` is consulted for every message; the default
@@ -261,7 +263,7 @@ impl<D: DisplayBackend> WebRtcHandler<D> {
         let registry = register_default_interceptors(Registry::new(), &mut me).map_err(|e| err(&e))?;
         let registry = registry.with(Slot::from(14_000), KeyframeForwarder::default());
         let config = RTCConfigurationBuilder::new()
-            .with_ice_servers(vec![RTCIceServer { urls: vec!["stun:stun.cloudflare.com:3478".into()], ..Default::default() }])
+            .with_ice_servers(self.ice_servers.clone())
             .build();
 
         let input_state = Arc::new(Mutex::new(InputSession::default()));
@@ -486,6 +488,14 @@ impl<D: DisplayBackend> SessionHandler for WebRtcHandler<D> {
             _ => {}
         }
         vec![]
+    }
+
+    fn set_ice_servers(&mut self, servers: Vec<protocol::IceServer>) {
+        info!(turn = servers.iter().any(|s| s.credential.is_some()), "ice servers updated");
+        self.ice_servers = servers
+            .into_iter()
+            .map(|s| RTCIceServer { urls: s.urls, username: s.username.unwrap_or_default(), credential: s.credential.unwrap_or_default() })
+            .collect();
     }
 
     async fn on_car_offline(&mut self, car_id: &str) {

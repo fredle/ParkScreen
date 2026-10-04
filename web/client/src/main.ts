@@ -1,4 +1,4 @@
-import type { ServerToCar } from "./protocol";
+import type { IceServer, ServerToCar } from "./protocol";
 import { Session } from "./session";
 import { httpUrl } from "./config";
 import { Signalling } from "./signalling";
@@ -33,6 +33,8 @@ function pairingScreen(error = "") {
 
 let sig: Signalling | undefined;
 let session: Session | undefined;
+/** Sent by the server before `hosts`; falls back to STUN only. */
+let iceServers: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
 let stopReporting: (() => void) | undefined;
 let detachInput: (() => void) | undefined;
 
@@ -48,7 +50,7 @@ function startSession(hostId: string) {
   session?.close();
   stopReporting?.();
   detachInput?.();
-  session = new Session(sig!, hostId, video, (s) => {
+  session = new Session(sig!, hostId, video, iceServers, (s) => {
     if (s === "connected") {
       ui.hidden = true;
       video.hidden = false;
@@ -68,6 +70,7 @@ function onMsg(m: ServerToCar) {
     case "error":
       if (m.message === "not paired") { store.clear(); pairingScreen("This car is no longer paired."); }
       break;
+    case "ice_servers": iceServers = m.ice_servers; break;
     case "hosts": {
       const online = m.hosts.filter((h) => h.online);
       if (online.length === 0) show(`<p>Your PC is offline. Start ParkScreen on it.</p>`);

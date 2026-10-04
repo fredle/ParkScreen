@@ -34,8 +34,20 @@ pub enum ServerToHost {
     CarOnline { car_id: String },
     CarOffline { car_id: String },
     Signal { car_id: String, payload: serde_json::Value },
+    /// STUN/TURN servers (with short-lived credentials) for the next sessions.
+    IceServers { ice_servers: Vec<IceServer> },
     Pong,
     Error { message: String },
+}
+
+/// One STUN/TURN entry. Serialises to the shape of a browser `RTCIceServer`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 /// Messages sent by a car (web client) on `/ws/car`.
@@ -56,6 +68,8 @@ pub enum ServerToCar {
     HostOnline { host_id: String },
     HostOffline { host_id: String },
     Signal { host_id: String, payload: serde_json::Value },
+    /// Sent before `Hosts`, which is what starts a session.
+    IceServers { ice_servers: Vec<IceServer> },
     Pong,
     Error { message: String },
 }
@@ -87,5 +101,13 @@ mod tests {
         let s = serde_json::to_string(&m).unwrap();
         assert_eq!(s, r#"{"type":"signal","host_id":"h","payload":{"sdp":"x"}}"#);
         assert_eq!(serde_json::from_str::<CarToServer>(&s).unwrap(), m);
+    }
+
+    #[test]
+    fn ice_server_matches_browser_shape() {
+        let stun = IceServer { urls: vec!["stun:s:3478".into()], username: None, credential: None };
+        assert_eq!(serde_json::to_string(&stun).unwrap(), r#"{"urls":["stun:s:3478"]}"#);
+        let turn = IceServer { urls: vec!["turn:t:3478".into()], username: Some("u".into()), credential: Some("c".into()) };
+        assert_eq!(serde_json::to_string(&turn).unwrap(), r#"{"urls":["turn:t:3478"],"username":"u","credential":"c"}"#);
     }
 }

@@ -14,13 +14,14 @@ use std::{path::PathBuf, str::FromStr, sync::{Arc, Mutex}};
 
 const USAGE: &str = "\
 parkscreen-host [--pair] [--no-tray] [--with-input] [--bitrate 12M]
-                [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
+                [--display duplicate|extend] [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
 parkscreen-host list
 parkscreen-host set-mode --monitor <index>|<name> 1920x1200[@60]
 
-On Windows the agent streams the chosen monitor (default: a virtual display if present);
-elsewhere it streams a test pattern. `--match-viewport` switches the monitor to the car's
-screen size when it connects. RUST_LOG=parkscreen_host=debug for more logging.";
+On Windows the agent streams the screen chosen in the tray menu (duplicate the main monitor, or
+extend onto a ParkScreen virtual display); `--display duplicate|extend` sets that choice, and
+`--monitor` streams a specific monitor instead. Elsewhere it streams a test pattern.
+`--match-viewport` switches a duplicated monitor to the car's screen size when it connects. RUST_LOG=parkscreen_host=debug for more logging.";
 
 fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PARKSCREEN_DATA") {
@@ -84,7 +85,7 @@ fn init_dpi() {}
 fn selector() -> Selector {
     match opt("--monitor") {
         Some(s) => Selector::from_str(&s).unwrap_or_else(|e| exit_with(e)),
-        None => Selector::Auto,
+        None => Selector::Follow,
     }
 }
 
@@ -203,15 +204,25 @@ async fn main() {
     let allow = Arc::new(Mutex::new(AllowList::load(dir.join("cars.txt")).expect("allow-list")));
     println!("host id: {}", identity.host_id());
 
+    parkscreen_host::settings::init(&dir);
+    if let Some(m) = opt("--display") {
+        parkscreen_host::settings::set_display_mode(m.parse().unwrap_or_else(|e| exit_with(e)));
+    }
+    #[cfg(windows)]
+    parkscreen_host::settings::set_driver_present(parkscreen_host::idd::driver_installed());
+
     let bitrate_kbps = opt("--bitrate").map(|b| parse_bitrate_kbps(&b).unwrap_or_else(|e| exit_with(e)));
 
     #[cfg(windows)]
     let (display, media) = {
-        use parkscreen_host::windows_media::{EncoderKind, ExistingMonitorDisplay, WindowsMedia};
+        use parkscreen_host::windows_media::{EncoderKind, ExistingMonitorDisplay, SwitchableDisplay, WindowsMedia};
         let monitor = selector();
         let encoder = opt("--encoder").map_or(EncoderKind::Auto, |e| e.parse().unwrap_or_else(|e| exit_with(e)));
         (
-            ExistingMonitorDisplay { monitor: monitor.clone(), match_viewport: flag("--match-viewport") },
+            SwitchableDisplay {
+                duplicate: ExistingMonitorDisplay { monitor: monitor.clone(), match_viewport: flag("--match-viewport") },
+                extend: Default::default(),
+            },
             Arc::new(WindowsMedia { monitor, encoder, idr_secs: 10 }),
         )
     };
