@@ -17,6 +17,44 @@ const WARNING = `<p class="warn">Use only while parked. Tesla blocks video while
 
 function show(html: string) { ui.hidden = false; ui.innerHTML = html; }
 
+/** Buttons shown on every waiting or error screen so the car is never stuck. */
+const ACTIONS = `<p><button id="retry">Reconnect</button> <button id="reset" class="secondary">Reset pairing</button></p>`;
+
+/** Show a status message with Reconnect and Reset pairing buttons. */
+function status(message: string) {
+  show(`<p>${message}</p>${ACTIONS}`);
+  document.getElementById("retry")!.onclick = () => reconnect();
+  document.getElementById("reset")!.onclick = () => resetPairing();
+}
+
+function teardown() {
+  if (graceTimer) clearTimeout(graceTimer);
+  if (retryTimer) clearTimeout(retryTimer);
+  graceTimer = retryTimer = undefined;
+  session?.close();
+  session = undefined;
+  stopReporting?.();
+  detachInput?.();
+  video.hidden = true;
+}
+
+/** Forget this car's pairing and go back to the code screen. */
+function resetPairing() {
+  teardown();
+  sig?.close();
+  sig = undefined;
+  lastHost = undefined;
+  store.clear();
+  pairingScreen();
+}
+
+/** Throw the current connection away and start again from the signalling socket. */
+function reconnect() {
+  teardown();
+  attempts = 0;
+  connect();
+}
+
 function pairingScreen(error = "") {
   show(`<h1>ParkScreen</h1><p>Enter the 6-digit pairing code from ParkScreen on your PC.</p>
     <input id="code" inputmode="numeric" maxlength="6" autofocus><button id="go">Pair</button>
@@ -37,32 +75,61 @@ let session: Session | undefined;
 let iceServers: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
 let stopReporting: (() => void) | undefined;
 let detachInput: (() => void) | undefined;
+/** The PC we last streamed from, for automatic retries. */
+let lastHost: string | undefined;
+let attempts = 0;
+let graceTimer: ReturnType<typeof setTimeout> | undefined;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function connect() {
   const token = store.get();
   if (!token) return pairingScreen();
-  show("<p>Connecting…</p>");
+  status("Connecting…");
   sig?.close();
-  sig = new Signalling(token, onMsg, (up) => { if (!up) show("<p>Reconnecting…</p>"); });
+  sig = new Signalling(token, onMsg, (up) => { if (!up) status("Reconnecting to ParkScreen…"); });
 }
 
 function startSession(hostId: string) {
+  lastHost = hostId;
   session?.close();
   stopReporting?.();
   detachInput?.();
-  session = new Session(sig!, hostId, video, iceServers, (s) => {
-    if (s === "connected") {
+  if (graceTimer) clearTimeout(graceTimer);
+  const me: Session = new Session(sig!, hostId, video, iceServers, (state) => {
+    if (me !== session) return; // a replaced session
+    if (state === "connected") {
+      if (graceTimer) clearTimeout(graceTimer);
+      attempts = 0;
       ui.hidden = true;
       video.hidden = false;
       video.play().catch(() => {});
-    } else if (s === "failed" || s === "disconnected") {
-      video.hidden = true;
-      show("<p>Connection lost. Waiting for the PC…</p>");
+    } else if (state === "disconnected") {
+      // Usually a blip that heals by itself: give it a few seconds before giving up.
+      graceTimer = setTimeout(() => connectionLost(hostId), 4000);
+    } else if (state === "failed") {
+      connectionLost(hostId);
     }
   });
+  session = me;
   session.start();
   stopReporting = session.startReporting();
   detachInput = attachInput(video, session.sendInput);
+}
+
+/** The peer connection died: retry on our own a few times, then wait for the user. */
+function connectionLost(hostId: string) {
+  session?.close();
+  session = undefined;
+  stopReporting?.();
+  detachInput?.();
+  video.hidden = true;
+  if (attempts < 3) {
+    attempts++;
+    status(`Connection lost. Retrying (${attempts} of 3)…`);
+    retryTimer = setTimeout(() => { if (sig) startSession(hostId); }, 2000 * attempts);
+  } else {
+    status("Connection lost. Check that ParkScreen is running on your PC, then tap Reconnect.");
+  }
 }
 
 function onMsg(m: ServerToCar) {
@@ -73,14 +140,14 @@ function onMsg(m: ServerToCar) {
     case "ice_servers": iceServers = m.ice_servers; break;
     case "hosts": {
       const online = m.hosts.filter((h) => h.online);
-      if (online.length === 0) show(`<p>Your PC is offline. Start ParkScreen on it.</p>`);
+      if (online.length === 0) status("Your PC is offline. Start ParkScreen on it.");
       else if (online.length === 1) startSession(online[0].host_id);
       else show(`<p>Choose a PC</p>` + online.map((h, i) => `<button data-h="${h.host_id}">PC ${i + 1}</button>`).join(""));
       ui.querySelectorAll<HTMLButtonElement>("button[data-h]").forEach((b) => (b.onclick = () => startSession(b.dataset.h!)));
       break;
     }
     case "host_online": startSession(m.host_id); break;
-    case "host_offline": stopReporting?.(); detachInput?.(); session?.close(); video.hidden = true; show("<p>Your PC went offline.</p>"); break;
+    case "host_offline": teardown(); status("Your PC went offline. It will reconnect on its own when ParkScreen is running again."); break;
     case "signal": session?.onSignal(m.payload); break;
   }
 }
