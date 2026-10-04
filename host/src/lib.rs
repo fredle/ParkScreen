@@ -15,6 +15,8 @@ pub mod signalling;
 pub mod status;
 pub mod updater;
 #[cfg(windows)]
+pub mod driver_setup;
+#[cfg(windows)]
 pub mod tray;
 pub mod convert;
 pub mod cursor;

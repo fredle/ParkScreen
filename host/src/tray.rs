@@ -15,8 +15,8 @@ use windows::{
         Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
         System::Threading::CreateMutexW,
         UI::WindowsAndMessaging::{
-            DispatchMessageW, MessageBoxW, PeekMessageW, TranslateMessage, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MSG,
-            PM_REMOVE,
+            DispatchMessageW, MessageBoxW, PeekMessageW, TranslateMessage, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK,
+            MB_SETFOREGROUND, MB_YESNO, MSG, PM_REMOVE,
         },
     },
 };
@@ -38,6 +38,42 @@ pub fn message(title: &str, text: &str) {
     let (title, text) = (HSTRING::from(title), HSTRING::from(text));
     thread::spawn(move || unsafe {
         MessageBoxW(None, &text, &title, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    });
+}
+
+/// Yes/No question. Blocks, so call it from a worker thread, never the tray loop.
+pub fn confirm(title: &str, text: &str) -> bool {
+    unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) == IDYES }
+}
+
+/// Install or update the display driver on a worker thread (download, one UAC prompt).
+fn driver_action() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(|| {
+        match crate::driver_setup::check() {
+            Err(e) => message("ParkScreen display driver", &format!("Could not look for the display driver: {e}")),
+            Ok(None) => message("ParkScreen display driver", "Your display driver is up to date."),
+            Ok(Some(m)) => {
+                let verb = if crate::settings::driver_present() { "Update" } else { "Install" };
+                let signed = if m.test_signed {
+                    "\n\nThis is a test-signed build: Windows only loads it when test-signing mode is on."
+                } else {
+                    ""
+                };
+                let ask = format!("{verb} the ParkScreen display driver (version {})?\n\nWindows will ask for administrator permission once.{signed}", m.version);
+                if confirm("ParkScreen display driver", &ask) {
+                    match crate::driver_setup::install(&m) {
+                        Ok(msg) => message("ParkScreen display driver", &msg),
+                        Err(e) => message("ParkScreen display driver", &e),
+                    }
+                }
+            }
+        }
+        BUSY.store(false, Ordering::SeqCst);
     });
 }
 
@@ -113,12 +149,23 @@ fn status_text() -> String {
     }
 }
 
+fn driver_label() -> &'static str {
+    if !crate::settings::driver_present() {
+        "Install display driver (needs admin)…"
+    } else if crate::driver_setup::update_available() {
+        "Update display driver…"
+    } else {
+        "Check for display driver update…"
+    }
+}
+
 const EXTEND_LABEL: &str = "Extend: car is a second screen";
 const EXTEND_MISSING: &str = "Extend: car is a second screen (needs the display driver)";
 
 /// Starts the tray on its own thread. `request_pair` asks the server for a pairing code; the code
 /// arrives through the agent's `on_pair_code` callback.
 pub fn spawn(request_pair: impl Fn() + Send + 'static) {
+    crate::driver_setup::spawn_update_checker();
     thread::spawn(move || {
         let menu = Menu::new();
         let status = MenuItem::new(status_text(), false, None);
@@ -127,18 +174,19 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let ext = CheckMenuItem::new(EXTEND_LABEL, true, false, None);
         let pause = CheckMenuItem::new("Pause streaming (disconnect cars)", true, false, None);
         let reset = MenuItem::new("Reset connection", true, None);
+        let driver_item = MenuItem::new(driver_label(), true, None);
         let site = MenuItem::new("Open ParkScreen website", true, None);
         let update = MenuItem::new("Check for updates", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
         let quit = MenuItem::new("Quit ParkScreen", true, None);
-        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &pause, &reset, &PredefinedMenuItem::separator(), &dup, &ext, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
+        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &pause, &reset, &PredefinedMenuItem::separator(), &dup, &ext, &driver_item, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
         let Ok(tray) = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("ParkScreen").with_icon(Icon::from_resource(1, Some((32, 32))).unwrap_or_else(|_| icon())).build() else {
             tracing::warn!("could not create the tray icon");
             return;
         };
         let (pair_id, site_id, update_id, auto_id, quit_id) =
             (pair.id().clone(), site.id().clone(), update.id().clone(), autostart.id().clone(), quit.id().clone());
-        let (pause_id, reset_id) = (pause.id().clone(), reset.id().clone());
+        let (pause_id, reset_id, driver_id) = (pause.id().clone(), reset.id().clone(), driver_item.id().clone());
         let (dup_id, ext_id) = (dup.id().clone(), ext.id().clone());
         let sync_mode = |driver: bool| {
             let extend = crate::settings::chosen_mode() == crate::settings::DisplayMode::Extend && driver;
@@ -150,6 +198,7 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let mut driver = crate::settings::driver_present();
         sync_mode(driver);
         let mut last = String::new();
+        let mut last_driver_label = driver_label();
         let mut last_check = std::time::Instant::now();
         loop {
             unsafe {
@@ -177,6 +226,8 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
                     crate::status::set_paused(false);
                     crate::status::request_close_sessions();
                     crate::status::request_reconnect();
+                } else if ev.id == driver_id {
+                    driver_action();
                 } else if ev.id == site_id {
                     open_site();
                 } else if ev.id == update_id {
@@ -195,6 +246,11 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
                     driver = now;
                     sync_mode(driver);
                 }
+            }
+            let label = driver_label();
+            if label != last_driver_label {
+                driver_item.set_text(label);
+                last_driver_label = label;
             }
             let text = status_text();
             if text != last {

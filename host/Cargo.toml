@@ -22,6 +22,8 @@ rtc = "0.21"
 openh264 = "0.9"
 bytes = "1"
 velopack = "1.2.161"
+sha2 = "0.10"
+ureq = "3"
 
 [dev-dependencies]
 parkscreen-server = { path = "../server" }

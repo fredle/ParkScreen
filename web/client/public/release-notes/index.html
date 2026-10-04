@@ -16,7 +16,17 @@
   <a class="cta" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download the latest</a>
 
   <article class="rel">
-    <h2>0.1.9 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <h2>0.1.10 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <ul>
+      <li><strong>Display driver install from the tray</strong> (for Extend mode): <strong>Install display driver (needs admin)…</strong> downloads the driver, checks it, and installs it with a single administrator prompt. Nothing is installed without you choosing it.</li>
+      <li>When a newer driver exists the menu offers <strong>Update display driver…</strong>. It checks after start and twice a day once a driver is installed.</li>
+      <li>The driver is an early, test-signed build: Windows must be in test-signing mode to load it, and the installer tells you if it is not. It has not yet been tested on a wide range of PCs.</li>
+      <li>Also from a terminal: <code>parkscreen-host driver check</code> and <code>parkscreen-host driver install</code>.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.9</h2><time datetime="2026-10-04">4 October 2026</time>
     <ul>
       <li><strong>New app icon</strong>: a monitor with a car on it, in Explorer, the taskbar, the installer and the tray.</li>
       <li>Tray menu: <strong>Reset connection</strong> drops every stream and signs in to the server again; cars reconnect by themselves.</li>

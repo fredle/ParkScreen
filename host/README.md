@@ -26,6 +26,14 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
 - Without Windows (or for tests) the agent streams a test pattern through OpenH264.
 - Updates itself (Velopack, `updater.rs`): checks the feed every 4 hours and restarts into a newer version when no car is streaming.
 - **Tray:** with no arguments the app runs from the system tray (status, Pair a car…, Pause streaming, Reset connection, display mode, open website, check for updates, Start with Windows, Quit), one instance per user, no admin rights needed. `--pair` or `--no-tray` runs in a terminal instead and prints the code.
+- **Display driver (Extend mode):** the tray item *Install display driver (needs admin)…* (also
+  `parkscreen-host driver install`, and `driver check`) reads the manifest of the rolling GitHub
+  release `driver`, downloads `ParkScreenIdd.zip`, checks its SHA-256, unpacks it under
+  `%LOCALAPPDATA%\ParkScreen\driver\<version>` and runs `install.ps1` elevated (one UAC prompt).
+  The app itself stays per-user. It looks for a newer driver after start and twice a day once a
+  driver is installed, and the menu item becomes *Update display driver…*; it never installs
+  without asking. Builds are test-signed for now, so Windows must be in test-signing mode
+  (`bcdedit /set testsigning on`, Secure Boot off, restart): the install says so if it is not.
 - Touch: car touches are injected as real multi-touch contacts on the shared monitor (`InjectTouchInput`); scroll uses the mouse wheel. Needs `--with-input` or a car paired with input allowed.
 
 Build from the repo root: `cargo build --release -p parkscreen-host` (needs the MSVC build

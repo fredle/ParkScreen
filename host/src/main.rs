@@ -17,6 +17,7 @@ parkscreen-host [--pair] [--no-tray] [--with-input] [--bitrate 12M]
                 [--display duplicate|extend] [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
 parkscreen-host list
 parkscreen-host set-mode --monitor <index>|<name> 1920x1200[@60]
+parkscreen-host driver check|install   (display driver: look for it, or install/update it)
 
 On Windows the agent streams the screen chosen in the tray menu (duplicate the main monitor, or
 extend onto a ParkScreen virtual display); `--display duplicate|extend` sets that choice, and
@@ -127,6 +128,27 @@ fn subcommand() -> bool {
             let m = monitors::select(&all, &selector()).unwrap_or_else(|e| exit_with(format!("{e:#}")));
             monitors::set_mode(&m.device_name, mode).unwrap_or_else(|e| exit_with(format!("{e:#}")));
             println!("{} set to {mode}", m.device_name);
+            true
+        }
+        #[cfg(windows)]
+        Some("driver") => {
+            use parkscreen_host::driver_setup as ds;
+            match args.get(1).map(String::as_str) {
+                Some("check") => match ds::check() {
+                    Err(e) => exit_with(e),
+                    Ok(None) => println!("The display driver is up to date{}.", ds::installed_version().map(|v| format!(" ({v})")).unwrap_or_default()),
+                    Ok(Some(m)) => println!("Available: display driver {} (installed: {}).", m.version, ds::installed_version().unwrap_or_else(|| "none".into())),
+                },
+                Some("install") => {
+                    let m = ds::fetch_manifest().unwrap_or_else(|e| exit_with(e));
+                    println!("Installing display driver {} (Windows will ask for administrator permission)...", m.version);
+                    match ds::install(&m) {
+                        Ok(msg) => println!("{msg}"),
+                        Err(e) => exit_with(e),
+                    }
+                }
+                _ => exit_with("usage: parkscreen-host driver check|install"),
+            }
             true
         }
         _ => false,
