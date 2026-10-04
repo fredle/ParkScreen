@@ -12,7 +12,10 @@ pub mod identity;
 pub mod input;
 pub mod rtc_sender;
 pub mod signalling;
+pub mod status;
 pub mod updater;
+#[cfg(windows)]
+pub mod tray;
 pub mod convert;
 pub mod cursor;
 pub mod monitors;

@@ -23,6 +23,11 @@ pub fn set_live_sessions(n: usize) {
     LIVE_SESSIONS.store(n, Ordering::Relaxed);
 }
 
+/// Cars currently streaming.
+pub fn live_sessions() -> usize {
+    LIVE_SESSIONS.load(Ordering::Relaxed)
+}
+
 pub fn spawn() {
     let url = std::env::var("PARKSCREEN_UPDATE_URL").unwrap_or_else(|_| FEED_URL.to_string());
     let Ok(um) = UpdateManager::new(HttpSource::new(url), None, None) else {

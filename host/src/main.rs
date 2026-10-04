@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use parkscreen_host::input::NullInput;
 use parkscreen_host::{
     agent::Agent,
@@ -10,7 +12,7 @@ use parkscreen_host::{
 use std::{path::PathBuf, str::FromStr, sync::{Arc, Mutex}};
 
 const USAGE: &str = "\
-parkscreen-host [--pair] [--with-input] [--bitrate 12M]
+parkscreen-host [--pair] [--no-tray] [--with-input] [--bitrate 12M]
                 [--monitor auto|<index>|<name>] [--encoder auto|hardware|software] [--match-viewport]
 parkscreen-host list
 parkscreen-host set-mode --monitor <index>|<name> 1920x1200[@60]
@@ -129,8 +131,37 @@ fn subcommand() -> bool {
     }
 }
 
+/// A windows-subsystem exe has no console. When started from a terminal, borrow the parent's so
+/// `--help`, `--pair`, `list` and `set-mode` still print.
+#[cfg(windows)]
+fn attach_console() {
+    use windows::{
+        core::w,
+        Win32::{
+            Foundation::GENERIC_WRITE,
+            Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_WRITE, OPEN_EXISTING},
+            System::Console::{AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
+        },
+    };
+    unsafe {
+        // Output already redirected (a pipe or file): keep it.
+        if matches!(GetStdHandle(STD_OUTPUT_HANDLE), Ok(h) if !h.is_invalid()) {
+            return;
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+            return;
+        }
+        if let Ok(h) = CreateFileW(w!("CONOUT$"), GENERIC_WRITE.0, FILE_SHARE_WRITE, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None) {
+            let _ = SetStdHandle(STD_OUTPUT_HANDLE, h);
+            let _ = SetStdHandle(STD_ERROR_HANDLE, h);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    attach_console();
     // Velopack runs the app with --veloapp-install/-updated/-obsolete/-uninstall and waits 30 s
     // for it to exit. There is nothing to do in those hooks, so leave straight away.
     if std::env::args().any(|a| a.starts_with("--veloapp-")) {
@@ -146,6 +177,15 @@ async fn main() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse().unwrap())).init();
     init_dpi();
     if subcommand() {
+        return;
+    }
+    // Windows: run as a tray app unless a terminal flag asks for console output.
+    #[cfg(windows)]
+    let tray_mode = !flag("--pair") && !flag("--no-tray");
+    #[cfg(not(windows))]
+    let tray_mode = false;
+    #[cfg(windows)]
+    if tray_mode && !parkscreen_host::tray::single_instance() {
         return;
     }
     parkscreen_host::updater::spawn();
@@ -194,8 +234,23 @@ async fn main() {
         allow: allow.clone(),
         input_on_pair: flag("--with-input"),
         handler,
-        on_pair_code: Box::new(|code| println!("Pairing code (valid 5 min): {code}")),
+        on_pair_code: Box::new(move |code| {
+            #[cfg(windows)]
+            if tray_mode {
+                parkscreen_host::tray::message(
+                    "ParkScreen",
+                    &format!("Pairing code: {code}\n\nIn your car's browser open parkscreen.web.app/car and enter this code. It is valid for 5 minutes."),
+                );
+                return;
+            }
+            println!("Pairing code (valid 5 min): {code}")
+        }),
     };
+    #[cfg(windows)]
+    if tray_mode {
+        let tx = tx.clone();
+        parkscreen_host::tray::spawn(move || tx.send(protocol::HostToServer::PairStart));
+    }
     if flag("--pair") {
         agent.request_pair_code();
     }

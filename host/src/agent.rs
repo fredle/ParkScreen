@@ -67,7 +67,11 @@ impl<H: SessionHandler> Agent<H> {
     }
 
     pub async fn handle(&mut self, ev: Event) {
-        let Event::Msg(m) = ev else { return };
+        let m = match ev {
+            Event::Msg(m) => m,
+            Event::Connected => return crate::status::set_online(true),
+            Event::Disconnected => return crate::status::set_online(false),
+        };
         match m {
             ServerToHost::PairCode { code, .. } => (self.on_pair_code)(code),
             ServerToHost::Paired { car_id } => {
