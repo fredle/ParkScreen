@@ -18,7 +18,7 @@ const WARNING = `<p class="warn">Use only while parked. Tesla blocks video while
 function show(html: string) { ui.hidden = false; ui.innerHTML = html; }
 
 function pairingScreen(error = "") {
-  show(`<h1>ParkScreen</h1><p>Enter the 6-digit code shown in the ParkScreen tray menu on your PC.</p>
+  show(`<h1>ParkScreen</h1><p>Enter the 6-digit pairing code from ParkScreen on your PC.</p>
     <input id="code" inputmode="numeric" maxlength="6" autofocus><button id="go">Pair</button>
     <p class="warn">${error}</p>${WARNING}`);
   const go = async () => {
