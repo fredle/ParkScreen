@@ -1,21 +1,43 @@
 <#
-Installs (or removes) the ParkScreen virtual display driver. Run from an elevated PowerShell.
+Installs (or removes) the ParkScreen virtual display driver. It is shipped in the driver zip and run
+by the host app through an elevated PowerShell, or by hand from an administrator PowerShell.
 
-  install.ps1 -Package <folder with ParkScreenIdd.inf, .dll and .cat>
-  install.ps1 -Remove
+  install.ps1 [-Package <folder>] [-ResultFile <path>]
+  install.ps1 -Remove [-ResultFile <path>]
 
-Development: the package must be signed with a certificate the PC trusts. For a self-signed test
-certificate run `bcdedit /set testsigning on`, reboot, and import the certificate into
-LocalMachine\Root and LocalMachine\TrustedPublisher.
+-Package     folder with ParkScreenIdd.inf, .dll, .cat and ParkScreenTest.cer (default: this folder)
+-ResultFile  a one-line JSON result is written here:
+               {"ok":true,"version":"0.1.5.0","reboot":false}
+               {"ok":false,"code":3,"message":"..."}
+
+Exit codes: 0 ok, 1 error, 2 not administrator, 3 Windows test-signing is off.
+
+The driver in the rolling "driver" release is signed with a test certificate. Windows only loads it
+when test-signing is on (`bcdedit /set testsigning on`, Secure Boot off, then restart). This script
+never turns that on for you. It does trust the test certificate (LocalMachine\Root and
+TrustedPublisher), which is how `pnputil` accepts the package.
 #>
 param(
-    [string]$Package = (Join-Path $PSScriptRoot 'package'),
-    [switch]$Remove
+    [string]$Package = $PSScriptRoot,
+    [switch]$Remove,
+    [string]$ResultFile
 )
 $ErrorActionPreference = 'Stop'
 
+function Write-Result([hashtable]$r) {
+    if ($ResultFile) {
+        try { ($r | ConvertTo-Json -Compress) | Set-Content -LiteralPath $ResultFile -Encoding ASCII } catch { }
+    }
+}
+
+function Fail([int]$code, [string]$message) {
+    Write-Host $message
+    Write-Result @{ ok = $false; code = $code; message = $message }
+    exit $code
+}
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {
-    throw 'Run this script from an elevated (administrator) PowerShell.'
+    Fail 2 'Run this script from an elevated (administrator) PowerShell.'
 }
 
 Add-Type -TypeDefinition @'
@@ -49,22 +71,71 @@ public static class ParkScreenSetup {
 }
 '@
 
-if ($Remove) {
-    $dev = Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue
-    foreach ($d in $dev) { pnputil /remove-device $d.InstanceId | Out-Host }
-    Get-WindowsDriver -Online | Where-Object OriginalFileName -like '*parkscreenidd.inf' |
-        ForEach-Object { pnputil /delete-driver $_.Driver /uninstall /force | Out-Host }
-    return
+function Test-SigningOn {
+    $out = (& bcdedit /enum '{current}' 2>&1) -join "`n"
+    return ($out -match '(?im)^\s*testsigning\s+Yes')
 }
 
-$inf = Join-Path (Resolve-Path $Package) 'ParkScreenIdd.inf'
-if (-not (Test-Path $inf)) { throw "ParkScreenIdd.inf not found in $Package" }
-pnputil /add-driver $inf | Out-Host
-if ($LASTEXITCODE -ne 0) { throw 'pnputil could not add the driver (is the package signed and trusted?)' }
-if (Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue) {
-    Write-Host 'The ParkScreen display device already exists; the driver package was updated.'
-} else {
-    $reboot = [ParkScreenSetup]::Install($inf, 'Root\ParkScreenIdd')
-    if ($reboot) { Write-Host 'Restart Windows to finish installing the display driver.' }
+try {
+    if ($Remove) {
+        $dev = Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue
+        foreach ($d in $dev) { pnputil /remove-device $d.InstanceId | Out-Host }
+        Get-WindowsDriver -Online | Where-Object OriginalFileName -like '*parkscreenidd.inf' |
+            ForEach-Object { pnputil /delete-driver $_.Driver /uninstall /force | Out-Host }
+        Write-Host 'The ParkScreen display driver was removed.'
+        Write-Result @{ ok = $true; removed = $true; reboot = $false }
+        exit 0
+    }
+
+    $pkg = (Resolve-Path -LiteralPath $Package).Path
+    $inf = Join-Path $pkg 'ParkScreenIdd.inf'
+    if (-not (Test-Path -LiteralPath $inf)) { Fail 1 "ParkScreenIdd.inf not found in $pkg" }
+
+    # Trust the test certificate (idempotent).
+    $cerFile = Join-Path $pkg 'ParkScreenTest.cer'
+    $testSigned = $false
+    if (Test-Path -LiteralPath $cerFile) {
+        $cer = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cerFile
+        $cat = Join-Path $pkg 'ParkScreenIdd.cat'
+        if (Test-Path -LiteralPath $cat) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $cat
+            if ($sig.SignerCertificate -and $sig.SignerCertificate.Thumbprint -eq $cer.Thumbprint) { $testSigned = $true }
+        }
+        if ($testSigned) {
+            foreach ($store in 'Root', 'TrustedPublisher') {
+                if (-not (Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Thumbprint -eq $cer.Thumbprint)) {
+                    Import-Certificate -FilePath $cerFile -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
+                }
+            }
+        }
+    }
+
+    # A test-signed driver only loads with test-signing on. Never switch it on automatically: it
+    # needs Secure Boot off and a restart, which is the user's call.
+    if ($testSigned -and -not (Test-SigningOn)) {
+        Fail 3 ('Windows test-signing is off, so Windows will not load this test-signed display driver. ' +
+                'To try it: turn Secure Boot off in the PC firmware, run "bcdedit /set testsigning on" from an ' +
+                'administrator command prompt, restart, then install the driver again.')
+    }
+
+    pnputil /add-driver $inf | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail 1 "pnputil could not add the driver (exit code $LASTEXITCODE). Is the package signed and trusted?" }
+
+    $reboot = $false
+    if (Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue) {
+        Write-Host 'The ParkScreen display device already exists; the driver package was updated.'
+    } else {
+        $reboot = [ParkScreenSetup]::Install($inf, 'Root\ParkScreenIdd')
+        if ($reboot) { Write-Host 'Restart Windows to finish installing the display driver.' }
+    }
+
+    $ver = ''
+    $line = Select-String -LiteralPath $inf -Pattern '^\s*DriverVer\s*=\s*([^;]+)' | Select-Object -First 1
+    if ($line) { $ver = ($line.Matches[0].Groups[1].Value.Trim() -split ',')[-1].Trim() }
+    Write-Host 'Done. Choose "Extend" in the ParkScreen tray menu.'
+    Write-Result @{ ok = $true; version = $ver; reboot = [bool]$reboot }
+    exit 0
 }
-Write-Host 'Done. Choose "Extend" in the ParkScreen tray menu.'
+catch {
+    Fail 1 $_.Exception.Message
+}

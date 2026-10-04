@@ -32,6 +32,36 @@ Still untested, because it has never been installed or run on a machine:
 The Rust side (`host/src/idd.rs`) is built and tested, including a test that the IOCTL codes and
 GUID match `ParkScreenIdd/Ioctl.h`.
 
+## Distribution (test-signed, rolling release)
+
+Every driver build on `main` (the `driver` workflow) publishes to one rolling GitHub release, tag
+`driver`, titled "ParkScreen display driver (test-signed)". The repository is public, so the host
+app downloads the assets anonymously:
+
+| Asset | What it is |
+|---|---|
+| `driver-manifest.json` | `{"version":"0.1.<run>","url":"…/releases/download/driver/ParkScreenIdd.zip","sha256":"…","testSigned":true,"minHost":"0.1.9"}` |
+| `ParkScreenIdd.zip` | `ParkScreenIdd.dll`, `.inf`, `.cat`, `ParkScreenTest.cer`, `install.ps1` (all at the zip root) |
+
+The version is `0.1.<workflow run number>` and is stamped into the INF as `DriverVer`
+(`<date>,0.1.<run>.0`), so each build is a newer driver and installs as an upgrade. The host
+compares the installed version with `driver-manifest.json`, checks the zip against `sha256`, and
+runs `install.ps1` elevated (`-ResultFile` returns `{"ok":…}`; exit codes 0 ok, 1 error, 2 not
+administrator, 3 test-signing off).
+
+**Signing.** The DLL and the catalog are signed with a self-signed test certificate
+(`CN=ParkScreen Test Driver Signing`). The public half is `ParkScreenTest.cer`; the private half is
+the repo secrets `DRIVER_TEST_PFX_BASE64` and `DRIVER_TEST_PFX_PASSWORD`. `install.ps1` trusts that
+certificate (LocalMachine `Root` and `TrustedPublisher`), but Windows only loads a test-signed
+display driver with **test-signing on**: turn Secure Boot off in the firmware, run
+`bcdedit /set testsigning on`, and restart. The installer never does this for you.
+
+**Release signing, later.** For other people's PCs the driver has to be signed by Microsoft:
+register the company in the Windows Hardware Dev Center (this normally needs an EV code-signing
+certificate), submit the CAB for attestation signing, and publish the returned package with
+`testSigned: false`. `install.ps1` already skips the test-signing check for packages that are not
+signed with the test certificate.
+
 ## Layout
 
 | File | Purpose |
