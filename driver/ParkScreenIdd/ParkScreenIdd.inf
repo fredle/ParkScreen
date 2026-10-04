@@ -36,6 +36,9 @@ AddReg = ParkScreen_HardwareSettings
 [ParkScreen_HardwareSettings]
 HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
 HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "ParkScreenIddGroup"
+; Local administrators and the system, plus interactive users: the host agent runs without
+; administrator rights.
+HKR,, Security, %REG_SZ%, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
 
 [ParkScreen_Install.NT.Services]
 AddService = WUDFRd,0x000001fa,WUDFRD_ServiceInstall

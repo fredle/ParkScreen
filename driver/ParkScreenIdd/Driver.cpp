@@ -167,12 +167,8 @@ NTSTATUS EvtDeviceAdd(WDFDRIVER, PWDFDEVICE_INIT deviceInit)
     NTSTATUS st = IddCxDeviceInitConfig(deviceInit, &client);
     if (!NT_SUCCESS(st)) return st;
 
-    // Local administrators and the system, plus interactive users: the host agent runs without
-    // administrator rights.
-    DECLARE_CONST_UNICODE_STRING(sddl, L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
-    st = WdfDeviceInitAssignSDDLString(deviceInit, &sddl);
-    if (!NT_SUCCESS(st)) return st;
-
+    // Who may open the control interface (the host agent runs without administrator rights) is
+    // set in the INF (HKR,,Security): UMDF has no WdfDeviceInitAssignSDDLString.
     WDFDEVICE device;
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
