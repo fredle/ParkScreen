@@ -1,0 +1,24 @@
+name: driver
+on:
+  push:
+    paths: [ "driver/**", ".github/workflows/driver.yml" ]
+  pull_request:
+    paths: [ "driver/**", ".github/workflows/driver.yml" ]
+jobs:
+  build:
+    # The display driver needs Visual Studio and the Windows Driver Kit (WDK). The windows-2022
+    # runner image ships with both; check the build log if the image changes.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build driver
+        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parkscreen-idd-unsigned
+          path: |
+            driver/ParkScreenIdd/x64/Release/ParkScreenIdd/
+            driver/ParkScreenIdd/x64/Release/ParkScreenIdd.dll
+            driver/ParkScreenIdd/x64/Release/ParkScreenIdd.pdb
+          if-no-files-found: warn
