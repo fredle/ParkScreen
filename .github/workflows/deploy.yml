@@ -4,6 +4,8 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # Driver-only pushes do not change the server or the site.
+    paths-ignore: ["driver/**", ".github/workflows/driver.yml"]
   workflow_dispatch:
 
 permissions:
