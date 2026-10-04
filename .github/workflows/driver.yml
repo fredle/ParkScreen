@@ -8,39 +8,30 @@ on:
 jobs:
   build:
     # The display driver needs Visual Studio and the Windows Driver Kit (WDK). The windows-2022
-    # runner image has VS and the WDK Visual Studio extension, but not necessarily the WDK headers
-    # and libraries for the installed Windows SDK, so the job checks and installs them.
+    # runner image has Visual Studio and the kit itself (headers and libraries), but the kit's
+    # MSBuild toolset (WindowsUserModeDriver10.0) is only wired into Visual Studio by the extension
+    # that ships inside the kit, so the job installs that first.
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: What the runner has
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
-          "SDK include versions:"; Get-ChildItem "$kits\Include" -Directory | Select-Object -ExpandProperty Name
-          "wudfwdm.h:"; Get-ChildItem "$kits\Include" -Recurse -Filter wudfwdm.h -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          "iddcx.h:"; Get-ChildItem "$kits\Include" -Recurse -Filter iddcx.h -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          "IddCxStub.lib:"; Get-ChildItem "$kits\Lib" -Recurse -Filter IddCxStub.lib -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          "WDK toolsets:"; Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
       - name: Install the WDK Visual Studio extension
-        # The kit is on the image but its MSBuild toolset (WindowsUserModeDriver10.0) is only wired
-        # into Visual Studio by the extension that ships inside the kit.
         shell: pwsh
         run: |
-          $kits = "${env:ProgramFiles(x86)}\Windows Kits\Vsix"
+          $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Vsix"
           Get-ChildItem $kits -Recurse -Filter *.vsix | Select-Object -ExpandProperty FullName
-          $vsix = Get-ChildItem "$kits\VS2022" -Recurse -Filter WDK.vsix | Sort-Object FullName | Select-Object -Last 1
+          $vsix = Get-ChildItem (Join-Path $kits "VS2022") -Recurse -Filter WDK.vsix | Sort-Object FullName | Select-Object -Last 1
           if (-not $vsix) { throw "WDK.vsix not found under $kits" }
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installerswhere.exe" -latest -property installationPath
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -property installationPath
+          $installer = Join-Path $vs "Common7\IDE\VSIXInstaller.exe"
           Write-Host "Installing $($vsix.FullName) into $vs"
-          $p = Start-Process "$vs\Common7\IDE\VSIXInstaller.exe" -ArgumentList "/quiet","/admin","`"$($vsix.FullName)`"" -Wait -PassThru
+          $p = Start-Process $installer -ArgumentList "/quiet", "/admin", "`"$($vsix.FullName)`"" -Wait -PassThru
           Write-Host "VSIXInstaller exit code $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "VSIXInstaller failed" }
       - name: Evaluated driver properties
         continue-on-error: true
-        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:PlatformToolset,WindowsTargetPlatformVersion,WDKContentRoot,UMDF_VERSION_MAJOR,UMDF_VERSION_MINOR,IncludePath,DriverType
+        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 -getProperty:PlatformToolset,WDKContentRoot,UMDF_VERSION_MAJOR,UMDF_VERSION_MINOR,IncludePath,DriverType
       - name: Build driver
         run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
       - uses: actions/upload-artifact@v4
