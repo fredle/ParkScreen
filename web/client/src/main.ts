@@ -6,8 +6,34 @@ import { attachInput } from "./input";
 
 const ui = document.getElementById("ui")!;
 const video = document.getElementById("v") as HTMLVideoElement;
+const bar = document.getElementById("bar") as HTMLDivElement;
 const stopBtn = document.getElementById("stop") as HTMLButtonElement;
+const fullBtn = document.getElementById("full") as HTMLButtonElement;
 stopBtn.onclick = () => disconnect();
+
+// Full screen is the user's choice (a button), not something a first touch triggers. The whole page
+// goes full screen, not just the video, so Disconnect stays reachable.
+fullBtn.onclick = () => {
+  if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+  else void document.documentElement.requestFullscreen?.().catch(() => {});
+};
+document.addEventListener("fullscreenchange", () => {
+  fullBtn.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+});
+
+// This is a live screen, not a video to scrub: no browser or Windows media controls (pause, elapsed
+// time, picture-in-picture, cast) for it. The attributes are also set in car/index.html.
+video.disablePictureInPicture = true;
+video.disableRemotePlayback = true;
+video.controls = false;
+if ("mediaSession" in navigator) {
+  const ms = navigator.mediaSession;
+  ms.metadata = null;
+  // Any play/pause from system media keys or overlays keeps the stream playing.
+  for (const action of ["play", "pause", "stop", "seekbackward", "seekforward", "seekto", "previoustrack", "nexttrack"] as const) {
+    try { ms.setActionHandler(action, () => { void video.play().catch(() => {}); }); } catch { /* unsupported action */ }
+  }
+}
 const KEY = "ps_token";
 const store = {
   get: () => { try { return localStorage.getItem(KEY); } catch { return null; } },
@@ -38,7 +64,8 @@ function teardown() {
   stopReporting?.();
   detachInput?.();
   video.hidden = true;
-  stopBtn.hidden = true;
+  bar.hidden = true;
+  if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
 }
 
 /** Close the stream from the car and stay disconnected until the user taps Reconnect. */
@@ -114,7 +141,7 @@ function startSession(hostId: string) {
       attempts = 0;
       ui.hidden = true;
       video.hidden = false;
-      stopBtn.hidden = false;
+      bar.hidden = false;
       video.play().catch(() => {});
     } else if (state === "disconnected") {
       // Usually a blip that heals by itself: give it a few seconds before giving up.
@@ -136,7 +163,7 @@ function connectionLost(hostId: string) {
   stopReporting?.();
   detachInput?.();
   video.hidden = true;
-  stopBtn.hidden = true;
+  bar.hidden = true;
   if (attempts < 3) {
     attempts++;
     status(`Connection lost. Retrying (${attempts} of 3)…`);

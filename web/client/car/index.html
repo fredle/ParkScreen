@@ -13,8 +13,9 @@
   button{background:#2a6df4;border-color:#2a6df4}
   button.secondary{background:#222;border-color:#555}
   video{position:fixed;inset:0;width:100%;height:100%;background:#000;object-fit:contain}
-  #stop{position:fixed;top:8px;right:8px;opacity:.35;padding:6px 12px;font-size:14px;background:#222;border-color:#555}
-  #stop:active,#stop:hover{opacity:1}
+  #bar{position:fixed;top:8px;right:8px;display:flex;gap:8px}
+  #bar button{opacity:.35;padding:6px 12px;font-size:14px;background:#222;border-color:#555}
+  #bar button:active,#bar button:hover{opacity:1}
   .warn{color:#fb4;font-size:16px;max-width:36em}
   pre{font-size:14px;text-align:left;color:#9c9}
   [hidden]{display:none!important}
@@ -22,8 +23,8 @@
 </head>
 <body>
 <div id="ui"></div>
-<video id="v" autoplay playsinline muted hidden></video>
-<button id="stop" hidden>Disconnect</button>
+<video id="v" autoplay playsinline muted hidden disablepictureinpicture disableremoteplayback controlslist="nodownload nofullscreen noremoteplayback"></video>
+<div id="bar" hidden><button id="full">Full screen</button><button id="stop">Disconnect</button></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

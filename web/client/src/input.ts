@@ -29,8 +29,6 @@ export function attachInput(video: HTMLVideoElement, send: Send): () => void {
     if (id === undefined) return;
     e.preventDefault();
     video.setPointerCapture(e.pointerId);
-    // First gesture: go full-screen (needs a user gesture) so coordinates match the panel.
-    if (!document.fullscreenElement) video.requestFullscreen?.().catch(() => {});
     send({ t: "down", id, x: p.x, y: p.y });
   };
   const move = (e: PointerEvent) => {
