@@ -62,8 +62,11 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;ole32.lib;ntdll.lib;WdfDriverStubUm.lib;IddCxStub.lib;ucrt.lib;vcruntime.lib;msvcrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- UMDF 2 entry point from WdfDriverStubUm.lib; it calls DriverEntry. -->
-      <EntryPointSymbol>FxDriverEntryUm</EntryPointSymbol>
+      <!-- UMDF 2: the host calls the exported FxDriverEntryUm (from WdfDriverStubUm.lib), which calls
+           DriverEntry. It must NOT be the image entry point: the loader calls that as DllMain, and
+           FxDriverEntryUm would read the module handle as the host's loader structure and crash.
+           The entry point stays the CRT's default DLL entry. -->
+      <AdditionalOptions>/EXPORT:FxDriverEntryUm %(AdditionalOptions)</AdditionalOptions>
       <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
