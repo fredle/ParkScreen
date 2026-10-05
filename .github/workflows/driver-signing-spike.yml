@@ -1,0 +1,90 @@
+name: driver signing spike
+
+# W4 signing spike (PLAN.md section 4.4): does Windows accept the driver when it is signed with
+# Azure Trusted Signing, with test-signing OFF? Builds the driver, signs the DLL and the catalog
+# with the same Trusted Signing profile as the host exe, and uploads the package as a private
+# workflow artifact (never a release). Install it by hand on a test PC with install.ps1.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sign:
+    runs-on: windows-2022
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build driver
+        run: msbuild driver/ParkScreenIdd/ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+
+      - name: Stage the package
+        shell: pwsh
+        run: |
+          $pkg = "stage/ParkScreenIdd"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item "driver/ParkScreenIdd/x64/Release/ParkScreenIdd.dll" $pkg
+          Copy-Item "driver/ParkScreenIdd/ParkScreenIdd.inf" $pkg
+          $stampinf = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin") -Recurse -Filter stampinf.exe |
+            Where-Object { $_.FullName -match "x64" } | Sort-Object FullName | Select-Object -Last 1
+          $date = (Get-Date).ToUniversalTime().ToString("MM/dd/yyyy")
+          & $stampinf.FullName -f "$pkg/ParkScreenIdd.inf" -d $date -a amd64 -v "0.1.${{ github.run_number }}.0" -u 2.25.0
+          if ($LASTEXITCODE -ne 0) { throw "stampinf failed" }
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign ParkScreenIdd.dll (Azure Trusted Signing)
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\stage\ParkScreenIdd
+          files-folder-filter: dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Make the catalog
+        shell: pwsh
+        run: |
+          $inf2cat = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin") -Recurse -Filter Inf2Cat.exe |
+            Sort-Object FullName | Select-Object -Last 1
+          & $inf2cat.FullName /driver:"$((Resolve-Path stage/ParkScreenIdd).Path)" /os:10_X64 /uselocaltime
+          if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed" }
+
+      - name: Sign ParkScreenIdd.cat (Azure Trusted Signing)
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\stage\ParkScreenIdd
+          files-folder-filter: cat
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Show the signatures
+        shell: pwsh
+        run: |
+          foreach ($f in "ParkScreenIdd.dll", "ParkScreenIdd.cat") {
+            $s = Get-AuthenticodeSignature "stage/ParkScreenIdd/$f"
+            Write-Host "$f : $($s.Status) / $($s.SignerCertificate.Subject)"
+          }
+          Copy-Item driver/install.ps1 stage/ParkScreenIdd/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parkscreen-idd-trusted-signing-spike
+          path: stage/ParkScreenIdd
+          if-no-files-found: error
+          retention-days: 7
