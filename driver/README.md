@@ -32,16 +32,16 @@ Still untested, because it has never been installed or run on a machine:
 The Rust side (`host/src/idd.rs`) is built and tested, including a test that the IOCTL codes and
 GUID match `ParkScreenIdd/Ioctl.h`.
 
-## Distribution (test-signed, rolling release)
+## Distribution (Azure Trusted Signing, rolling release)
 
 Every driver build on `main` (the `driver` workflow) publishes to one rolling GitHub release, tag
-`driver`, titled "ParkScreen display driver (test-signed)". The repository is public, so the host
+`driver`, titled "ParkScreen display driver". The repository is public, so the host
 app downloads the assets anonymously:
 
 | Asset | What it is |
 |---|---|
-| `driver-manifest.json` | `{"version":"0.1.<run>","url":"…/releases/download/driver/ParkScreenIdd.zip","sha256":"…","testSigned":true,"minHost":"0.1.9"}` |
-| `ParkScreenIdd.zip` | `ParkScreenIdd.dll`, `.inf`, `.cat`, `ParkScreenTest.cer`, `install.ps1` (all at the zip root) |
+| `driver-manifest.json` | `{"version":"0.1.<run>","url":"…/releases/download/driver/ParkScreenIdd.zip","sha256":"…","testSigned":false,"minHost":"0.1.9"}` |
+| `ParkScreenIdd.zip` | `ParkScreenIdd.dll`, `.inf`, `.cat`, `install.ps1` (all at the zip root) |
 
 The version is `0.1.<workflow run number>` and is stamped into the INF as `DriverVer`
 (`<date>,0.1.<run>.0`), so each build is a newer driver and installs as an upgrade. The host
@@ -49,18 +49,19 @@ compares the installed version with `driver-manifest.json`, checks the zip again
 runs `install.ps1` elevated (`-ResultFile` returns `{"ok":…}`; exit codes 0 ok, 1 error, 2 not
 administrator, 3 test-signing off).
 
-**Signing.** The DLL and the catalog are signed with a self-signed test certificate
-(`CN=ParkScreen Test Driver Signing`). The public half is `ParkScreenTest.cer`; the private half is
-the repo secrets `DRIVER_TEST_PFX_BASE64` and `DRIVER_TEST_PFX_PASSWORD`. `install.ps1` trusts that
-certificate (LocalMachine `Root` and `TrustedPublisher`), but Windows only loads a test-signed
-display driver with **test-signing on**: turn Secure Boot off in the firmware, run
-`bcdedit /set testsigning on`, and restart. The installer never does this for you.
+**Signing.** The DLL and the catalog are signed with Azure Trusted Signing (publisher
+"FBL Consulting Ltd"; the `release` environment's Azure variables, OIDC login). The W4 signing
+spike showed that Windows 11 installs such a package with test-signing off and Secure Boot on: the
+device starts with no problem code. It is not a Microsoft signature, so Windows shows the
+"Would you like to install this device software?" publisher prompt once. Pull requests build
+without signing.
 
-**Release signing, later.** For other people's PCs the driver has to be signed by Microsoft:
-register the company in the Windows Hardware Dev Center (this normally needs an EV code-signing
-certificate), submit the CAB for attestation signing, and publish the returned package with
-`testSigned: false`. `install.ps1` already skips the test-signing check for packages that are not
-signed with the test certificate.
+**Attestation signing, if the prompt is a problem.** Register the company in the Windows Hardware
+Dev Center (this needs an EV code-signing certificate; Trusted Signing is not accepted), submit
+the CAB for attestation signing, and publish the returned package. That removes the prompt.
+
+**Test signing (development only).** `install.ps1` still understands a package signed with the
+self-signed `ParkScreenTest.cer` (it trusts the certificate and requires test-signing on).
 
 ## Layout
 
@@ -90,7 +91,7 @@ Needs Visual Studio 2022 (C++ desktop workload) with the WDK and its extension:
 
     msbuild driver\ParkScreenIdd\ParkScreenIdd.vcxproj /p:Configuration=Release /p:Platform=x64
 
-CI does the same (`.github/workflows/driver.yml`) and uploads an unsigned package.
+CI does the same (`.github/workflows/driver.yml`) and signs and publishes the package.
 
 ## Try it on a development PC
 
@@ -103,8 +104,8 @@ CI does the same (`.github/workflows/driver.yml`) and uploads an unsigned packag
 
 ## Not done
 
-- **Production signing.** Plan §4.4: test Azure Trusted Signing on this driver (the W4 spike). If
-  Windows rejects it, use SignPath Foundation or an EV certificate with attestation signing.
+- **Clean-machine check.** The spike install was on one PC; test a fresh Windows 11 PC (and
+  Windows 10 22H2), and Extend mode end to end.
 - **Installer.** The MSI/Store installer does not include the driver yet. Until then Extend is
   shown as unavailable in the tray menu, and the agent falls back to Duplicate.
 - Stage B (frames handed to the host through a shared texture), HDR, and more than one monitor.

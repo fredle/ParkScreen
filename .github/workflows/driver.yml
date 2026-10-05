@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 # One publish at a time, so the rolling release is never half replaced.
 concurrency: driver-${{ github.ref }}
@@ -19,6 +20,8 @@ jobs:
     # The windows-2022 runner image has both, but not the kit's Visual Studio extension, so the
     # project is a plain DLL project that adds the UMDF and IddCx paths itself (see the vcxproj).
     runs-on: windows-2022
+    # Signing needs the Azure variables of the "release" environment; pull requests only build.
+    environment: ${{ github.event_name != 'pull_request' && 'release' || '' }}
     env:
       # 0.1.<run number>: monotonic, and stamped into the INF so Windows treats newer builds as upgrades.
       DRIVER_VERSION: 0.1.${{ github.run_number }}
@@ -47,66 +50,81 @@ jobs:
           Get-Content "$pkg/ParkScreenIdd.inf" | Select-String "DriverVer", "UmdfLibraryVersion"
           Get-ChildItem $pkg | Format-Table Name, Length
 
-      - name: Sign the driver (test certificate) and make the catalog
-        # The DLL is signed first because the catalog holds its hash. The certificate is a
-        # self-signed test certificate (driver/ParkScreenTest.cer holds the public half), so the
-        # package only loads with Windows test-signing on. Real release signing needs Microsoft
-        # attestation signing (see driver/README.md).
+      - name: Azure login (OIDC)
+        if: github.event_name != 'pull_request'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # The DLL is signed first because the catalog holds its hash. Azure Trusted Signing is not a
+      # Microsoft (attestation) signature, so Windows shows its "install this device software?"
+      # publisher prompt once; test-signing mode is not needed (see driver/README.md).
+      - name: Sign ParkScreenIdd.dll (Azure Trusted Signing)
+        if: github.event_name != 'pull_request'
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\driver\ParkScreenIdd\x64\Release\ParkScreenIdd
+          files-folder-filter: dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Make the catalog
+        if: github.event_name != 'pull_request'
         shell: pwsh
-        env:
-          PFX_BASE64: ${{ secrets.DRIVER_TEST_PFX_BASE64 }}
-          PFX_PASSWORD: ${{ secrets.DRIVER_TEST_PFX_PASSWORD }}
         run: |
-          if (-not $env:PFX_BASE64) {
-            Write-Warning "No DRIVER_TEST_PFX_BASE64 secret (pull request from a fork?): skipping signing."
-            exit 0
-          }
-          $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin"
-          $signtool = Get-ChildItem $kits -Recurse -Filter signtool.exe | Where-Object { $_.FullName -match "x64" } |
+          $inf2cat = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin") -Recurse -Filter Inf2Cat.exe |
             Sort-Object FullName | Select-Object -Last 1
-          $inf2cat = Get-ChildItem $kits -Recurse -Filter Inf2Cat.exe | Sort-Object FullName | Select-Object -Last 1
-          if (-not $signtool) { throw "signtool.exe not found" }
           if (-not $inf2cat) { throw "Inf2Cat.exe not found" }
-          Write-Host "signtool: $($signtool.FullName)"
-          Write-Host "inf2cat:  $($inf2cat.FullName)"
-
-          $pfx = Join-Path $env:RUNNER_TEMP "driver-test.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
           $pkg = (Resolve-Path "driver/ParkScreenIdd/x64/Release/ParkScreenIdd").Path
-
-          function Sign($file) {
-            & $signtool.FullName sign /f $pfx /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
-          }
-          Sign "$pkg/ParkScreenIdd.dll"
           & $inf2cat.FullName /driver:$pkg /os:10_X64 /uselocaltime
           if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed" }
           if (-not (Test-Path "$pkg/ParkScreenIdd.cat")) { throw "Inf2Cat did not produce ParkScreenIdd.cat" }
-          Sign "$pkg/ParkScreenIdd.cat"
-          Remove-Item $pfx -Force
 
+      - name: Sign ParkScreenIdd.cat (Azure Trusted Signing)
+        if: github.event_name != 'pull_request'
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://weu.codesigning.azure.net/' }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT || 'leatham-signing-account' }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE || 'cert-profile' }}
+          files-folder: ${{ github.workspace }}\driver\ParkScreenIdd\x64\Release\ParkScreenIdd
+          files-folder-filter: cat
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Check the signatures
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $pkg = (Resolve-Path "driver/ParkScreenIdd/x64/Release/ParkScreenIdd").Path
           foreach ($f in "ParkScreenIdd.dll", "ParkScreenIdd.cat") {
             $s = Get-AuthenticodeSignature "$pkg/$f"
-            Write-Host "$f signed by: $($s.SignerCertificate.Subject) (status $($s.Status))"
-            if (-not $s.SignerCertificate) { throw "$f carries no signature" }
+            Write-Host "$f : $($s.Status) / $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne "Valid") { throw "$f is not validly signed ($($s.Status))" }
           }
 
       - name: Build the zip and manifest
         shell: pwsh
         run: |
           $pkg = (Resolve-Path "driver/ParkScreenIdd/x64/Release/ParkScreenIdd").Path
-          Copy-Item "driver/ParkScreenTest.cer" $pkg
           Copy-Item "driver/install.ps1" $pkg
           $dist = Join-Path $env:RUNNER_TEMP "driver-dist"
           New-Item -ItemType Directory -Force $dist | Out-Null
           $zip = Join-Path $dist "ParkScreenIdd.zip"
-          Compress-Archive -Path "$pkg/ParkScreenIdd.dll", "$pkg/ParkScreenIdd.inf", "$pkg/ParkScreenIdd.cat", "$pkg/ParkScreenTest.cer", "$pkg/install.ps1" -DestinationPath $zip -Force
+          Compress-Archive -Path "$pkg/ParkScreenIdd.dll", "$pkg/ParkScreenIdd.inf", "$pkg/ParkScreenIdd.cat", "$pkg/install.ps1" -DestinationPath $zip -Force
           $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           $manifest = [ordered]@{
             version    = $env:DRIVER_VERSION
             url        = "https://github.com/${{ github.repository }}/releases/download/driver/ParkScreenIdd.zip"
             sha256     = $sha
-            testSigned = $true
+            testSigned = $false
             minHost    = "0.1.9"
           }
           ($manifest | ConvertTo-Json -Compress) | Set-Content (Join-Path $dist "driver-manifest.json") -Encoding ASCII
@@ -117,7 +135,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: parkscreen-idd-test-signed
+          name: parkscreen-idd-signed
           path: |
             ${{ env.DIST }}
             driver/ParkScreenIdd/x64/Release/ParkScreenIdd.pdb
@@ -130,13 +148,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = "Test-signed ParkScreen display driver $env:DRIVER_VERSION (built from $env:GITHUB_SHA). Loads only with Windows test-signing on. See driver/README.md."
+          $notes = "ParkScreen display driver $env:DRIVER_VERSION (built from $env:GITHUB_SHA), signed with Azure Trusted Signing. See driver/README.md."
           gh release view driver --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create driver --repo $env:GITHUB_REPOSITORY --title "ParkScreen display driver (test-signed)" --notes $notes --latest=false --target $env:GITHUB_SHA
+            gh release create driver --repo $env:GITHUB_REPOSITORY --title "ParkScreen display driver" --notes $notes --latest=false --target $env:GITHUB_SHA
             if ($LASTEXITCODE -ne 0) { throw "could not create the release" }
           } else {
-            gh release edit driver --repo $env:GITHUB_REPOSITORY --title "ParkScreen display driver (test-signed)" --notes $notes --prerelease=false --latest=false
+            gh release edit driver --repo $env:GITHUB_REPOSITORY --title "ParkScreen display driver" --notes $notes --prerelease=false --latest=false
           }
           gh release upload driver --repo $env:GITHUB_REPOSITORY --clobber "$env:DIST/ParkScreenIdd.zip" "$env:DIST/driver-manifest.json"
           if ($LASTEXITCODE -ne 0) { throw "could not upload the assets" }
