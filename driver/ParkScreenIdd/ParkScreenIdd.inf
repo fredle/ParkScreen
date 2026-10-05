@@ -52,6 +52,9 @@ UmdfHostProcessSharing   = ProcessSharingDisabled
 [UmdfService_Install]
 UmdfLibraryVersion = $UMDFVERSION$
 ServiceBinary      = %13%\ParkScreenIdd.dll
+; Loads the IddCx extension into the UMDF host. Without it the IddCx function table is
+; never bound and the first IddCx call crashes the host (0xc0000005 in D0Entry).
+UmdfExtensions     = IddCx0102
 
 [WUDFRD_ServiceInstall]
 DisplayName   = %WudfRdDisplayName%
