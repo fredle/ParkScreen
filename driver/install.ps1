@@ -118,12 +118,21 @@ try {
                 'administrator command prompt, restart, then install the driver again.')
     }
 
-    pnputil /add-driver $inf | Out-Host
-    if ($LASTEXITCODE -ne 0) { Fail 1 "pnputil could not add the driver (exit code $LASTEXITCODE). Is the package signed and trusted?" }
+    $existing = Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue
+    # With the device present, /install also rebinds it to the new package (a plain /add-driver
+    # leaves it on the old one).
+    if ($existing) { pnputil /add-driver $inf /install | Out-Host } else { pnputil /add-driver $inf | Out-Host }
+    # 3010 = success, restart needed.
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { Fail 1 "pnputil could not add the driver (exit code $LASTEXITCODE). Is the package signed and trusted?" }
 
     $reboot = $false
-    if (Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue) {
-        Write-Host 'The ParkScreen display device already exists; the driver package was updated.'
+    if ($existing) {
+        Write-Host 'The ParkScreen display device already exists; the driver was updated.'
+        # Swapping the driver under a running device can leave it failed until it is restarted.
+        Start-Sleep -Seconds 3
+        $dev = Get-PnpDevice -FriendlyName 'ParkScreen Virtual Display' -ErrorAction SilentlyContinue
+        if ($dev -and $dev.Status -ne 'OK') { pnputil /restart-device $dev.InstanceId | Out-Host }
+        if ($LASTEXITCODE -eq 3010) { $reboot = $true }
     } else {
         $reboot = [ParkScreenSetup]::Install($inf, 'Root\ParkScreenIdd')
         if ($reboot) { Write-Host 'Restart Windows to finish installing the display driver.' }
