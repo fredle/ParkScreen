@@ -122,8 +122,8 @@ try {
     # With the device present, /install also rebinds it to the new package (a plain /add-driver
     # leaves it on the old one).
     if ($existing) { pnputil /add-driver $inf /install | Out-Host } else { pnputil /add-driver $inf | Out-Host }
-    # 3010 = success, restart needed.
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { Fail 1 "pnputil could not add the driver (exit code $LASTEXITCODE). Is the package signed and trusted?" }
+    # 3010 = success, restart needed. 259 = no more items: the device already has this driver.
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010 -and $LASTEXITCODE -ne 259) { Fail 1 "pnputil could not add the driver (exit code $LASTEXITCODE). Is the package signed and trusted?" }
 
     $reboot = $false
     if ($existing) {

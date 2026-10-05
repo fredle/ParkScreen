@@ -88,8 +88,17 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn ps_quote(p: &Path) -> String {
-    format!("'{}'", p.display().to_string().replace('\'', "''"))
+/// The PowerShell command that runs `install.ps1` elevated (one UAC prompt) and waits for it.
+/// `-File` does not strip single quotes, so its paths are double-quoted; the whole argument string
+/// is then one single-quoted PowerShell string for `Start-Process`.
+fn elevated_install_command(script: &Path, dir: &Path, result: &Path) -> String {
+    let inner = format!(
+        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -Package \"{}\" -ResultFile \"{}\"",
+        script.display(),
+        dir.display(),
+        result.display()
+    );
+    format!("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{}'", inner.replace('\'', "''"))
 }
 
 /// Download, verify, unpack and install `m`. Returns a message for the user.
@@ -121,14 +130,7 @@ pub fn install(m: &Manifest) -> Result<String, String> {
 
     let result = dir.join("result.json");
     let script = dir.join("install.ps1");
-    // The inner PowerShell runs elevated (one UAC prompt); this one waits for it.
-    let inner = format!(
-        "-NoProfile -ExecutionPolicy Bypass -File {} -Package {} -ResultFile {}",
-        ps_quote(&script),
-        ps_quote(&dir),
-        ps_quote(&result)
-    );
-    let outer = format!("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList \"{}\"", inner.replace('"', "\\\""));
+    let outer = elevated_install_command(&script, &dir, &result);
     let launched = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &outer])
         .creation_flags(CREATE_NO_WINDOW)
@@ -241,6 +243,10 @@ mod tests {
 
     #[test]
     fn quotes_paths_for_powershell() {
-        assert_eq!(ps_quote(Path::new(r"C:\a b\o'neil")), r"'C:\a b\o''neil'");
+        let c = elevated_install_command(Path::new(r"C:\a b\o'neil\install.ps1"), Path::new(r"C:\a b\o'neil"), Path::new(r"C:\a b\o'neil\result.json"));
+        assert_eq!(
+            c,
+            r#"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "C:\a b\o''neil\install.ps1" -Package "C:\a b\o''neil" -ResultFile "C:\a b\o''neil\result.json"'"#
+        );
     }
 }
