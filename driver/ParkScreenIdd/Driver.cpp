@@ -8,13 +8,38 @@
 #include "Driver.h"
 
 #include <new>
+#include <cstdarg>
+#include <cstdio>
 
 namespace {
+
+// Diagnostics: appends a line to C:\ProgramData\ParkScreenIdd.log (the driver host runs as LocalService,
+// which can create files there). Used for failures and adapter state only, so it stays small.
+void Log(const char* fmt, ...)
+{
+    char line[256];
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    int n = sprintf_s(line, "%02d:%02d:%02d ", t.wHour, t.wMinute, t.wSecond);
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsnprintf_s(line + n, sizeof(line) - n - 2, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    line[n++] = '\r';
+    line[n++] = '\n';
+    HANDLE f = CreateFileW(L"C:\\ProgramData\\ParkScreenIdd.log", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD written;
+    WriteFile(f, line, n, &written, nullptr);
+    CloseHandle(f);
+}
 
 struct State {
     SRWLOCK plugLock = SRWLOCK_INIT;   // serialises plug / unplug (IOCTLs and handle cleanup)
     SRWLOCK procLock = SRWLOCK_INIT;   // guards `processor`; taken by IddCx callbacks
     IDDCX_ADAPTER adapter = nullptr;
+    NTSTATUS adapterInit = STATUS_PENDING;  // AdapterInitStatus from EvtAdapterInitFinished
     IDDCX_MONITOR monitor = nullptr;
     bool plugged = false;
     ParkScreenMode mode = { 1920, 1080, 60 };
@@ -85,11 +110,11 @@ NTSTATUS PlugLocked(const ParkScreenMode& mode, WDFFILEOBJECT owner)
     in.pMonitorInfo = &info;
     IDARG_OUT_MONITORCREATE out = {};
     st = IddCxMonitorCreate(g.adapter, &in, &out);
-    if (!NT_SUCCESS(st)) return st;
+    if (!NT_SUCCESS(st)) { Log("IddCxMonitorCreate failed 0x%08x (adapter init 0x%08x)", st, g.adapterInit); return st; }
 
     IDARG_OUT_MONITORARRIVAL arrival = {};
     st = IddCxMonitorArrival(out.MonitorObject, &arrival);
-    if (!NT_SUCCESS(st)) return st;
+    if (!NT_SUCCESS(st)) { Log("IddCxMonitorArrival failed 0x%08x (adapter init 0x%08x)", st, g.adapterInit); return st; }
 
     g.monitor = out.MonitorObject;
     g.plugged = true;
@@ -214,6 +239,7 @@ NTSTATUS EvtDeviceD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE)
     IDARG_OUT_ADAPTER_INIT out = {};
     NTSTATUS st = IddCxAdapterInitAsync(&in, &out);
     if (NT_SUCCESS(st)) g.adapter = out.AdapterObject;
+    Log("IddCxAdapterInitAsync 0x%08x", st);
     return st;
 }
 
@@ -262,6 +288,8 @@ void EvtIoDeviceControl(WDFQUEUE, WDFREQUEST request, size_t outputLength, size_
 
 NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_INIT_FINISHED* args)
 {
+    g.adapterInit = args->AdapterInitStatus;
+    Log("EvtAdapterInitFinished 0x%08x", args->AdapterInitStatus);
     if (NT_SUCCESS(args->AdapterInitStatus)) g.adapter = adapter;
     return STATUS_SUCCESS;
 }
