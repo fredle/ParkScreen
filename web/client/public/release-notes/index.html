@@ -16,7 +16,16 @@
   <a class="cta" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download the latest</a>
 
   <article class="rel">
-    <h2>0.1.11 <span class="tag">Latest</span></h2><time datetime="2026-10-04">4 October 2026</time>
+    <h2>Display driver 0.1.15 <span class="tag">Latest</span></h2><time datetime="2026-10-05">5 October 2026</time>
+    <ul>
+      <li>The display driver is now signed with a real publisher certificate (FBL Consulting Ltd) instead of a test certificate. <strong>Windows no longer needs test-signing mode</strong> and Secure Boot can stay on.</li>
+      <li>Windows asks once, &ldquo;Would you like to install this device software?&rdquo;, because the driver is not signed by Microsoft. Choose Install. The driver comes through the existing <strong>Install or Update display driver</strong> tray item; no app update is needed.</li>
+      <li>Still early: tested on one Windows 11 PC so far.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.11</h2><time datetime="2026-10-04">4 October 2026</time>
     <ul>
       <li>Tray menu: <strong>Reset connection</strong> now drops every stream, signs in to the server again, and leaves streaming paused, so the car does not jump straight back. Untick <strong>Pause streaming</strong> to let cars connect again.</li>
       <li>Car page: a <strong>Disconnect</strong> button (top right while streaming) closes the connection from the car and stays disconnected until you tap Reconnect.</li>

@@ -32,8 +32,9 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
   `%LOCALAPPDATA%\ParkScreen\driver\<version>` and runs `install.ps1` elevated (one UAC prompt).
   The app itself stays per-user. It looks for a newer driver after start and twice a day once a
   driver is installed, and the menu item becomes *Update display driver…*; it never installs
-  without asking. Builds are test-signed for now, so Windows must be in test-signing mode
-  (`bcdedit /set testsigning on`, Secure Boot off, restart): the install says so if it is not.
+  without asking. The driver is signed with Azure Trusted Signing (publisher FBL Consulting Ltd), so
+  no test-signing mode is needed; Windows asks once whether to trust the publisher. A package with
+  `"testSigned": true` in the manifest still needs test-signing on, and the install says so if it is not.
 - Touch: car touches are injected as real multi-touch contacts on the shared monitor (`InjectTouchInput`); scroll uses the mouse wheel. Needs `--with-input` or a car paired with input allowed.
 
 Build from the repo root: `cargo build --release -p parkscreen-host` (needs the MSVC build
