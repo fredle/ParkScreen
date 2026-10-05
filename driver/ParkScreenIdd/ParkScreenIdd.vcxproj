@@ -61,7 +61,7 @@
       <PreprocessorDefinitions>IDDCX_VERSION_MAJOR=1;IDDCX_VERSION_MINOR=4;IDD_IS_FUNCTION_PRESENT_CHECKED;UMDF_VERSION_MAJOR=2;UMDF_VERSION_MINOR=25;UMDF_USING_NTSTATUS;_AMD64_;_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;ole32.lib;ntdll.lib;WdfDriverStubUm.lib;IddCxStub.lib;ucrt.lib;vcruntime.lib;msvcrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;ole32.lib;advapi32.lib;ntdll.lib;WdfDriverStubUm.lib;IddCxStub.lib;ucrt.lib;vcruntime.lib;msvcrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <!-- UMDF 2: the host calls the exported FxDriverEntryUm (from WdfDriverStubUm.lib), which calls
            DriverEntry. It must NOT be the image entry point: the loader calls that as DllMain, and
            FxDriverEntryUm would read the module handle as the host's loader structure and crash.

@@ -3,22 +3,23 @@
 #pragma once
 
 #include <windows.h>
-#include <winioctl.h>
 #include <initguid.h>
 
 // Device interface the host opens. {A3C2E1B4-6F5D-4B7A-9E28-1C4D7F0B8A65}
 DEFINE_GUID(GUID_DEVINTERFACE_PARKSCREEN, 0xa3c2e1b4, 0x6f5d, 0x4b7a, 0x9e, 0x28, 0x1c, 0x4d, 0x7f, 0x0b, 0x8a, 0x65);
 
-#define PARKSCREEN_FUNC_PLUG   0x800
-#define PARKSCREEN_FUNC_UNPLUG 0x801
-#define PARKSCREEN_FUNC_STATUS 0x802
+// Named pipe the driver serves (message mode). One request per message: u32 function, then the
+// input; the reply is an i32 NTSTATUS, then the output. Custom IOCTLs cannot be used: this is a
+// display adapter and Windows does not deliver them to the driver.
+#define PARKSCREEN_PIPE_NAME L"\\\\.\\pipe\\ParkScreenIdd"
 
 // Add the monitor, or change its mode if it is already present. Input: ParkScreenMode.
-#define IOCTL_PARKSCREEN_PLUG   CTL_CODE(FILE_DEVICE_UNKNOWN, PARKSCREEN_FUNC_PLUG, METHOD_BUFFERED, FILE_ANY_ACCESS)
+// The monitor is removed when the connection that plugged it closes.
+#define PARKSCREEN_FUNC_PLUG   0x800
 // Remove the monitor. No data.
-#define IOCTL_PARKSCREEN_UNPLUG CTL_CODE(FILE_DEVICE_UNKNOWN, PARKSCREEN_FUNC_UNPLUG, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define PARKSCREEN_FUNC_UNPLUG 0x801
 // Output: ParkScreenStatus.
-#define IOCTL_PARKSCREEN_STATUS CTL_CODE(FILE_DEVICE_UNKNOWN, PARKSCREEN_FUNC_STATUS, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define PARKSCREEN_FUNC_STATUS 0x802
 
 // Limits: an EDID detailed timing stores each size in 12 bits.
 #define PARKSCREEN_MIN_SIZE 320

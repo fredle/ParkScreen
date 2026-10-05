@@ -6,16 +6,15 @@ use crate::display::Mode;
 /// Device interface GUID of the driver, `GUID_DEVINTERFACE_PARKSCREEN` in `Ioctl.h`.
 pub const INTERFACE_GUID: u128 = 0xa3c2e1b4_6f5d_4b7a_9e28_1c4d7f0b8a65;
 
-const FILE_DEVICE_UNKNOWN: u32 = 0x22;
+/// Named pipe the driver serves, `PARKSCREEN_PIPE_NAME` in `Ioctl.h`. (Custom IOCTLs do not reach
+/// the driver: it is a display adapter.) One request per message: a little-endian u32 function,
+/// then the input; the reply is a little-endian i32 NTSTATUS, then the output.
+pub const PIPE_NAME: &str = r"\\.\pipe\ParkScreenIdd";
 
-/// `CTL_CODE(FILE_DEVICE_UNKNOWN, function, METHOD_BUFFERED, FILE_ANY_ACCESS)`.
-const fn ctl_code(function: u32) -> u32 {
-    (FILE_DEVICE_UNKNOWN << 16) | (function << 2)
-}
-
-pub const IOCTL_PLUG: u32 = ctl_code(0x800);
-pub const IOCTL_UNPLUG: u32 = ctl_code(0x801);
-pub const IOCTL_STATUS: u32 = ctl_code(0x802);
+pub const FUNC_PLUG: u32 = 0x800;
+pub const FUNC_UNPLUG: u32 = 0x801;
+#[allow(dead_code)]
+pub const FUNC_STATUS: u32 = 0x802;
 
 pub const MIN_SIZE: u32 = 320;
 pub const MAX_SIZE: u32 = 4095;
@@ -37,7 +36,7 @@ pub fn validate(mode: Mode) -> Result<(), String> {
     }
 }
 
-/// Input of `IOCTL_PLUG` (`ParkScreenMode`): three little-endian u32.
+/// Input of `FUNC_PLUG` (`ParkScreenMode`): three little-endian u32.
 pub fn plug_bytes(mode: Mode) -> [u8; 12] {
     let mut b = [0u8; 12];
     b[0..4].copy_from_slice(&mode.width.to_le_bytes());
@@ -66,9 +65,6 @@ mod win {
                 },
                 Display::{SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_EXTEND},
             },
-            Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE},
-            Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
-            System::IO::DeviceIoControl,
         },
     };
 
@@ -112,44 +108,39 @@ mod win {
         device_path().is_some()
     }
 
-    /// Open handle to the driver. The monitor lives as long as the handle: if the agent dies the
-    /// driver removes the monitor.
-    struct Device(HANDLE);
-
-    // The handle is only a number; the driver serialises requests.
-    unsafe impl Send for Device {}
+    /// Connection to the driver's control pipe. The monitor lives as long as the connection: if the
+    /// agent dies the driver removes the monitor.
+    struct Device(std::fs::File);
 
     impl Device {
         fn open() -> Result<Self, String> {
-            let path = device_path().ok_or("the ParkScreen display driver is not installed")?;
-            let h = unsafe {
-                CreateFileW(
-                    PCWSTR(path.as_ptr()),
-                    (GENERIC_READ | GENERIC_WRITE).0,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL,
-                    None,
-                )
+            if !driver_installed() {
+                return Err("the ParkScreen display driver is not installed".into());
             }
-            .map_err(|e| format!("could not open the display driver: {e}"))?;
-            Ok(Device(h))
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(PIPE_NAME)
+                .map_err(|e| format!("could not connect to the display driver: {e}"))?;
+            Ok(Device(f))
         }
 
-        fn control(&self, code: u32, input: &[u8]) -> Result<(), String> {
-            let mut returned = 0u32;
-            let inp = if input.is_empty() { None } else { Some(input.as_ptr() as *const _) };
-            unsafe { DeviceIoControl(self.0, code, inp, input.len() as u32, None, 0, Some(&mut returned), None) }
-                .map_err(|e| format!("display driver request failed: {e}"))
-        }
-    }
-
-    impl Drop for Device {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = CloseHandle(self.0);
+        /// One request/reply round trip; returns the driver's output.
+        fn control(&mut self, function: u32, input: &[u8]) -> Result<Vec<u8>, String> {
+            use std::io::{Read, Write};
+            let mut msg = function.to_le_bytes().to_vec();
+            msg.extend_from_slice(input);
+            self.0.write_all(&msg).map_err(|e| format!("display driver request failed: {e}"))?;
+            let mut reply = [0u8; 64];
+            let n = self.0.read(&mut reply).map_err(|e| format!("display driver reply failed: {e}"))?;
+            if n < 4 {
+                return Err("display driver sent a short reply".into());
             }
+            let status = i32::from_le_bytes([reply[0], reply[1], reply[2], reply[3]]);
+            if status < 0 {
+                return Err(format!("display driver refused the request (status 0x{:08x})", status as u32));
+            }
+            Ok(reply[4..n].to_vec())
         }
     }
 
@@ -194,16 +185,20 @@ mod win {
             if self.device.is_none() {
                 self.device = Some(Device::open()?);
             }
-            let dev = self.device.as_ref().expect("opened above");
-            dev.control(IOCTL_PLUG, &plug_bytes(mode))?;
+            let dev = self.device.as_mut().expect("opened above");
+            if let Err(e) = dev.control(FUNC_PLUG, &plug_bytes(mode)) {
+                // A broken connection (driver restarted) is reopened on the next try.
+                self.device = None;
+                return Err(e);
+            }
             self.current = Some(mode);
             wait_for_monitor(mode)
         }
 
         fn unplug_blocking(&mut self) -> Result<(), String> {
             self.current = None;
-            match &self.device {
-                Some(dev) => dev.control(IOCTL_UNPLUG, &[]),
+            match &mut self.device {
+                Some(dev) => dev.control(FUNC_UNPLUG, &[]).map(|_| ()),
                 None => Ok(()),
             }
         }
@@ -237,10 +232,9 @@ mod tests {
     const HEADER: &str = include_str!("../../driver/ParkScreenIdd/Ioctl.h");
 
     #[test]
-    fn ioctl_codes_match_ctl_code() {
-        assert_eq!(IOCTL_PLUG, 0x0022_2000);
-        assert_eq!(IOCTL_UNPLUG, 0x0022_2004);
-        assert_eq!(IOCTL_STATUS, 0x0022_2008);
+    fn pipe_name_matches_the_driver_header() {
+        assert!(HEADER.contains(r#"#define PARKSCREEN_PIPE_NAME L"\\\\.\\pipe\\ParkScreenIdd""#));
+        assert_eq!(PIPE_NAME, r"\\.\pipe\ParkScreenIdd");
     }
 
     #[test]

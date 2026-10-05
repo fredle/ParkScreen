@@ -7,6 +7,7 @@
 
 #include "Driver.h"
 
+#include <sddl.h>
 #include <new>
 #include <cstdarg>
 #include <cstdio>
@@ -42,12 +43,14 @@ void Log(const char* fmt, ...)
 struct State {
     SRWLOCK plugLock = SRWLOCK_INIT;   // serialises plug / unplug (IOCTLs and handle cleanup)
     SRWLOCK procLock = SRWLOCK_INIT;   // guards `processor`; taken by IddCx callbacks
+    SRWLOCK modeLock = SRWLOCK_INIT;   // guards `mode` only; never held across an IddCx call (the IddCx
+                                       // callbacks read the mode while a plug is still in progress)
     IDDCX_ADAPTER adapter = nullptr;
     NTSTATUS adapterInit = STATUS_PENDING;  // AdapterInitStatus from EvtAdapterInitFinished
     IDDCX_MONITOR monitor = nullptr;
     bool plugged = false;
     ParkScreenMode mode = { 1920, 1080, 60 };
-    WDFFILEOBJECT owner = nullptr;     // the handle that plugged the monitor; closing it unplugs
+    void* owner = nullptr;             // the pipe connection that plugged the monitor; closing it unplugs
     SwapChainProcessor* processor = nullptr;
     HANDLE departed = nullptr;         // set when IddCx has released the swap chain
     GUID container = {};
@@ -55,9 +58,9 @@ struct State {
 
 ParkScreenMode CurrentMode()
 {
-    AcquireSRWLockShared(&g.plugLock);
+    AcquireSRWLockShared(&g.modeLock);
     ParkScreenMode m = g.mode;
-    ReleaseSRWLockShared(&g.plugLock);
+    ReleaseSRWLockShared(&g.modeLock);
     return m;
 }
 
@@ -83,7 +86,7 @@ NTSTATUS UnplugLocked()
 }
 
 // Caller holds plugLock.
-NTSTATUS PlugLocked(const ParkScreenMode& mode, WDFFILEOBJECT owner)
+NTSTATUS PlugLocked(const ParkScreenMode& mode, void* owner)
 {
     if (!g.adapter) return STATUS_DEVICE_NOT_READY;
     if (g.plugged && g.mode.Width == mode.Width && g.mode.Height == mode.Height && g.mode.RefreshHz == mode.RefreshHz) {
@@ -93,7 +96,9 @@ NTSTATUS PlugLocked(const ParkScreenMode& mode, WDFFILEOBJECT owner)
     NTSTATUS st = UnplugLocked();
     if (!NT_SUCCESS(st)) return st;
 
+    AcquireSRWLockExclusive(&g.modeLock);
     g.mode = mode;
+    ReleaseSRWLockExclusive(&g.modeLock);
     BYTE edid[128];
     BuildEdid(mode, edid);
 
@@ -126,7 +131,7 @@ NTSTATUS PlugLocked(const ParkScreenMode& mode, WDFFILEOBJECT owner)
     return STATUS_SUCCESS;
 }
 
-NTSTATUS Plug(const ParkScreenMode& mode, WDFFILEOBJECT owner)
+NTSTATUS Plug(const ParkScreenMode& mode, void* owner)
 {
     AcquireSRWLockExclusive(&g.plugLock);
     NTSTATUS st = PlugLocked(mode, owner);
@@ -142,12 +147,111 @@ NTSTATUS Unplug()
     return st;
 }
 
+// The host agent controls the driver over a named pipe, not IOCTLs: this device is a display
+// adapter (IndirectKmd), and Windows does not deliver custom IOCTLs sent to such a device to the
+// UMDF driver (they fail with ERROR_NOT_SUPPORTED). Messages: request = u32 function (Ioctl.h)
+// followed by its input; response = i32 NTSTATUS followed by its output. Closing the connection
+// that plugged the monitor unplugs it, so a crashed agent never leaves a monitor behind.
+NTSTATUS HandleRequest(void* conn, const BYTE* in, DWORD inLen, BYTE* out, DWORD* outLen)
+{
+    *outLen = 0;
+    if (inLen < sizeof(UINT32)) return STATUS_INVALID_PARAMETER;
+    UINT32 func;
+    memcpy(&func, in, sizeof(func));
+    in += sizeof(func);
+    inLen -= sizeof(func);
+
+    switch (func) {
+    case PARKSCREEN_FUNC_PLUG: {
+        if (inLen < sizeof(ParkScreenMode)) return STATUS_INVALID_PARAMETER;
+        ParkScreenMode mode;
+        memcpy(&mode, in, sizeof(mode));
+        if (!ValidMode(mode)) return STATUS_INVALID_PARAMETER;
+        return Plug(mode, conn);
+    }
+    case PARKSCREEN_FUNC_UNPLUG:
+        return Unplug();
+    case PARKSCREEN_FUNC_STATUS: {
+        ParkScreenStatus status;
+        AcquireSRWLockShared(&g.plugLock);
+        status.Plugged = g.plugged ? 1 : 0;
+        ParkScreenMode m = CurrentMode();
+        status.Width = m.Width;
+        status.Height = m.Height;
+        status.RefreshHz = m.RefreshHz;
+        ReleaseSRWLockShared(&g.plugLock);
+        memcpy(out, &status, sizeof(status));
+        *outLen = sizeof(status);
+        return STATUS_SUCCESS;
+    }
+    }
+    return STATUS_INVALID_DEVICE_REQUEST;
+}
+
+DWORD WINAPI ConnectionThread(LPVOID param)
+{
+    HANDLE pipe = static_cast<HANDLE>(param);
+    BYTE in[64];
+    BYTE out[sizeof(INT32) + sizeof(ParkScreenStatus)];
+    for (;;) {
+        DWORD n = 0;
+        if (!ReadFile(pipe, in, sizeof(in), &n, nullptr)) break;
+        DWORD payload = 0;
+        NTSTATUS st = HandleRequest(pipe, in, n, out + sizeof(INT32), &payload);
+        if (!NT_SUCCESS(st)) Log("request failed 0x%08x", st);
+        INT32 code = static_cast<INT32>(st);
+        memcpy(out, &code, sizeof(code));
+        DWORD written = 0;
+        if (!WriteFile(pipe, out, sizeof(INT32) + payload, &written, nullptr)) break;
+    }
+    AcquireSRWLockExclusive(&g.plugLock);
+    if (g.plugged && g.owner == pipe) UnplugLocked();
+    ReleaseSRWLockExclusive(&g.plugLock);
+    DisconnectNamedPipe(pipe);
+    CloseHandle(pipe);
+    return 0;
+}
+
+DWORD WINAPI PipeServerThread(LPVOID)
+{
+    // System and administrators: everything; interactive users: read and write (the agent runs
+    // without administrator rights).
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", SDDL_REVISION_1, &sd, nullptr)) {
+        Log("security descriptor failed %lu", GetLastError());
+        return 1;
+    }
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), sd, FALSE };
+    for (;;) {
+        HANDLE pipe = CreateNamedPipeW(PARKSCREEN_PIPE_NAME, PIPE_ACCESS_DUPLEX,
+                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                       PIPE_UNLIMITED_INSTANCES, 256, 256, 0, &sa);
+        if (pipe == INVALID_HANDLE_VALUE) {
+            Log("CreateNamedPipe failed %lu", GetLastError());
+            Sleep(1000);
+            continue;
+        }
+        if (ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
+            HANDLE t = CreateThread(nullptr, 0, ConnectionThread, pipe, 0, nullptr);
+            if (t) { CloseHandle(t); continue; }
+        }
+        CloseHandle(pipe);
+    }
+}
+
+void StartPipeServer()
+{
+    static bool started = false;
+    if (started) return;
+    started = true;
+    HANDLE t = CreateThread(nullptr, 0, PipeServerThread, nullptr, 0, nullptr);
+    if (t) CloseHandle(t); else Log("could not start the pipe server %lu", GetLastError());
+}
+
 }  // namespace
 
 EVT_WDF_DRIVER_DEVICE_ADD EvtDeviceAdd;
 EVT_WDF_DEVICE_D0_ENTRY EvtDeviceD0Entry;
-EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
-EVT_WDF_FILE_CLEANUP EvtFileCleanup;
 EVT_IDD_CX_ADAPTER_INIT_FINISHED EvtAdapterInitFinished;
 EVT_IDD_CX_ADAPTER_COMMIT_MODES EvtAdapterCommitModes;
 EVT_IDD_CX_PARSE_MONITOR_DESCRIPTION EvtParseMonitorDescription;
@@ -179,11 +283,6 @@ NTSTATUS EvtDeviceAdd(WDFDRIVER, PWDFDEVICE_INIT deviceInit)
     pnp.EvtDeviceD0Entry = EvtDeviceD0Entry;
     WdfDeviceInitSetPnpPowerEventCallbacks(deviceInit, &pnp);
 
-    // Closing the handle that plugged the monitor (also when the agent crashes) removes it.
-    WDF_FILEOBJECT_CONFIG fileConfig;
-    WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, nullptr, nullptr, EvtFileCleanup);
-    WdfDeviceInitSetFileObjectConfig(deviceInit, &fileConfig, WDF_NO_OBJECT_ATTRIBUTES);
-
     IDD_CX_CLIENT_CONFIG client;
     IDD_CX_CLIENT_CONFIG_INIT(&client);
     client.EvtIddCxAdapterInitFinished = EvtAdapterInitFinished;
@@ -196,8 +295,6 @@ NTSTATUS EvtDeviceAdd(WDFDRIVER, PWDFDEVICE_INIT deviceInit)
     NTSTATUS st = IddCxDeviceInitConfig(deviceInit, &client);
     if (!NT_SUCCESS(st)) return st;
 
-    // Who may open the control interface (the host agent runs without administrator rights) is
-    // set in the INF (HKR,,Security): UMDF has no WdfDeviceInitAssignSDDLString.
     WDFDEVICE device;
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -207,14 +304,12 @@ NTSTATUS EvtDeviceAdd(WDFDRIVER, PWDFDEVICE_INIT deviceInit)
     st = IddCxDeviceInitialize(device);
     if (!NT_SUCCESS(st)) return st;
 
-    WDF_IO_QUEUE_CONFIG queueConfig;
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
-    queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
-    WDFQUEUE queue;
-    st = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &queue);
+    // The interface only tells the host that the driver is running (IOCTLs sent to it do not reach
+    // this driver, see the pipe server above); control goes over the named pipe.
+    st = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_PARKSCREEN, nullptr);
     if (!NT_SUCCESS(st)) return st;
-
-    return WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_PARKSCREEN, nullptr);
+    StartPipeServer();
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS EvtDeviceD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE)
@@ -245,49 +340,6 @@ NTSTATUS EvtDeviceD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE)
     if (NT_SUCCESS(st)) g.adapter = out.AdapterObject;
     Log("IddCxAdapterInitAsync 0x%08x", st);
     return st;
-}
-
-void EvtFileCleanup(WDFFILEOBJECT file)
-{
-    AcquireSRWLockExclusive(&g.plugLock);
-    if (g.plugged && g.owner == file) UnplugLocked();
-    ReleaseSRWLockExclusive(&g.plugLock);
-}
-
-void EvtIoDeviceControl(WDFQUEUE, WDFREQUEST request, size_t outputLength, size_t inputLength, ULONG code)
-{
-    NTSTATUS st = STATUS_INVALID_DEVICE_REQUEST;
-    size_t info = 0;
-    Log("ioctl 0x%08lx in=%zu out=%zu", code, inputLength, outputLength);
-
-    switch (code) {
-    case IOCTL_PARKSCREEN_PLUG: {
-        ParkScreenMode* mode = nullptr;
-        st = WdfRequestRetrieveInputBuffer(request, sizeof(ParkScreenMode), reinterpret_cast<PVOID*>(&mode), nullptr);
-        if (!NT_SUCCESS(st)) break;
-        if (!ValidMode(*mode)) { st = STATUS_INVALID_PARAMETER; break; }
-        st = Plug(*mode, WdfRequestGetFileObject(request));
-        break;
-    }
-    case IOCTL_PARKSCREEN_UNPLUG:
-        st = Unplug();
-        break;
-    case IOCTL_PARKSCREEN_STATUS: {
-        ParkScreenStatus* status = nullptr;
-        st = WdfRequestRetrieveOutputBuffer(request, sizeof(ParkScreenStatus), reinterpret_cast<PVOID*>(&status), nullptr);
-        if (!NT_SUCCESS(st)) break;
-        AcquireSRWLockShared(&g.plugLock);
-        status->Plugged = g.plugged ? 1 : 0;
-        status->Width = g.mode.Width;
-        status->Height = g.mode.Height;
-        status->RefreshHz = g.mode.RefreshHz;
-        ReleaseSRWLockShared(&g.plugLock);
-        info = sizeof(ParkScreenStatus);
-        break;
-    }
-    }
-    if (!NT_SUCCESS(st)) Log("ioctl 0x%08lx failed 0x%08x", code, st);
-    WdfRequestCompleteWithInformation(request, st, info);
 }
 
 NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_INIT_FINISHED* args)
