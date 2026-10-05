@@ -371,7 +371,7 @@ NTSTATUS EvtParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* in, 
     mode = {};
     mode.Size = sizeof(mode);
     mode.Origin = IDDCX_MONITOR_MODE_ORIGIN_MONITORDESCRIPTOR;
-    FillSignalInfo(mode.MonitorVideoSignalInfo, m.Width, m.Height, m.RefreshHz);
+    FillSignalInfo(mode.MonitorVideoSignalInfo, m.Width, m.Height, m.RefreshHz, true);
     out->PreferredMonitorModeIdx = 0;
     return STATUS_SUCCESS;
 }
@@ -389,7 +389,7 @@ NTSTATUS EvtGetDefaultDescriptionModes(IDDCX_MONITOR, const IDARG_IN_GETDEFAULTD
     mode = {};
     mode.Size = sizeof(mode);
     mode.Origin = IDDCX_MONITOR_MODE_ORIGIN_DRIVER;
-    FillSignalInfo(mode.MonitorVideoSignalInfo, m.Width, m.Height, m.RefreshHz);
+    FillSignalInfo(mode.MonitorVideoSignalInfo, m.Width, m.Height, m.RefreshHz, true);
     out->PreferredMonitorModeIdx = 0;
     return STATUS_SUCCESS;
 }
@@ -405,7 +405,7 @@ NTSTATUS EvtQueryTargetModes(IDDCX_MONITOR, const IDARG_IN_QUERYTARGETMODES* in,
     IDDCX_TARGET_MODE& target = in->pTargetModes[0];
     target = {};
     target.Size = sizeof(target);
-    FillSignalInfo(target.TargetVideoSignalInfo.targetVideoSignalInfo, m.Width, m.Height, m.RefreshHz);
+    FillSignalInfo(target.TargetVideoSignalInfo.targetVideoSignalInfo, m.Width, m.Height, m.RefreshHz, false);
     return STATUS_SUCCESS;
 }
 

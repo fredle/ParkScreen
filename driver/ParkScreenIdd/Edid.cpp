@@ -3,12 +3,12 @@
 #include <algorithm>
 #include <cstring>
 
-void FillSignalInfo(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& info, UINT32 width, UINT32 height, UINT32 hz)
+void FillSignalInfo(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& info, UINT32 width, UINT32 height, UINT32 hz, bool monitorMode)
 {
     info = {};
     info.totalSize.cx = info.activeSize.cx = width;
     info.totalSize.cy = info.activeSize.cy = height;
-    info.AdditionalSignalInfo.vSyncFreqDivider = 1;
+    info.AdditionalSignalInfo.vSyncFreqDivider = monitorMode ? 0 : 1;
     info.AdditionalSignalInfo.videoStandard = 255;
     info.vSyncFreq.Numerator = hz;
     info.vSyncFreq.Denominator = 1;
