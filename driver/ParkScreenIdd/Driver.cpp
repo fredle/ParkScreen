@@ -258,6 +258,7 @@ void EvtIoDeviceControl(WDFQUEUE, WDFREQUEST request, size_t outputLength, size_
 {
     NTSTATUS st = STATUS_INVALID_DEVICE_REQUEST;
     size_t info = 0;
+    Log("ioctl 0x%08lx in=%zu out=%zu", code, inputLength, outputLength);
 
     switch (code) {
     case IOCTL_PARKSCREEN_PLUG: {
@@ -285,8 +286,7 @@ void EvtIoDeviceControl(WDFQUEUE, WDFREQUEST request, size_t outputLength, size_
         break;
     }
     }
-    UNREFERENCED_PARAMETER(outputLength);
-    UNREFERENCED_PARAMETER(inputLength);
+    if (!NT_SUCCESS(st)) Log("ioctl 0x%08lx failed 0x%08x", code, st);
     WdfRequestCompleteWithInformation(request, st, info);
 }
 
