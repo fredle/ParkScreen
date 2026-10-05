@@ -13,8 +13,8 @@
 
 namespace {
 
-// Diagnostics: appends a line to C:\ProgramData\ParkScreenIdd.log (the driver host runs as LocalService,
-// which can create files there). Used for failures and adapter state only, so it stays small.
+// Diagnostics: appends a line to ParkScreenIdd.log in the driver host's temp folder
+// (C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp, the host runs as LocalService). Used for failures and adapter state only, so it stays small.
 void Log(const char* fmt, ...)
 {
     char line[256];
@@ -27,7 +27,11 @@ void Log(const char* fmt, ...)
     va_end(ap);
     line[n++] = '\r';
     line[n++] = '\n';
-    HANDLE f = CreateFileW(L"C:\\ProgramData\\ParkScreenIdd.log", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    wchar_t path[MAX_PATH + 32];
+    DWORD len = GetTempPathW(MAX_PATH, path);
+    if (len == 0 || len > MAX_PATH) return;
+    wcscat_s(path, L"ParkScreenIdd.log");
+    HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD written;
