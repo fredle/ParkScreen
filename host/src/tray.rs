@@ -175,11 +175,12 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let pause = CheckMenuItem::new("Pause streaming (disconnect cars)", true, false, None);
         let reset = MenuItem::new("Reset connection (stays paused)", true, None);
         let driver_item = MenuItem::new(driver_label(), true, None);
+        let touch = CheckMenuItem::new("Allow touch from the car (controls this PC)", true, crate::settings::touch_enabled(), None);
         let site = MenuItem::new("Open ParkScreen website", true, None);
         let update = MenuItem::new("Check for updates", true, None);
         let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
         let quit = MenuItem::new("Quit ParkScreen", true, None);
-        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &pause, &reset, &PredefinedMenuItem::separator(), &dup, &ext, &driver_item, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
+        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pair, &pause, &reset, &PredefinedMenuItem::separator(), &dup, &ext, &driver_item, &PredefinedMenuItem::separator(), &touch, &PredefinedMenuItem::separator(), &site, &update, &autostart, &PredefinedMenuItem::separator(), &quit]);
         let Ok(tray) = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("ParkScreen").with_icon(Icon::from_resource(1, Some((32, 32))).unwrap_or_else(|_| icon())).build() else {
             tracing::warn!("could not create the tray icon");
             return;
@@ -187,7 +188,7 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
         let (pair_id, site_id, update_id, auto_id, quit_id) =
             (pair.id().clone(), site.id().clone(), update.id().clone(), autostart.id().clone(), quit.id().clone());
         let (pause_id, reset_id, driver_id) = (pause.id().clone(), reset.id().clone(), driver_item.id().clone());
-        let (dup_id, ext_id) = (dup.id().clone(), ext.id().clone());
+        let (dup_id, ext_id, touch_id) = (dup.id().clone(), ext.id().clone(), touch.id().clone());
         let sync_mode = |driver: bool| {
             let extend = crate::settings::chosen_mode() == crate::settings::DisplayMode::Extend && driver;
             dup.set_checked(!extend);
@@ -218,6 +219,8 @@ pub fn spawn(request_pair: impl Fn() + Send + 'static) {
                     if crate::updater::live_sessions() > 0 {
                         message("ParkScreen", "The new screen mode applies the next time a car connects.");
                     }
+                } else if ev.id == touch_id {
+                    crate::settings::set_touch_enabled(touch.is_checked());
                 } else if ev.id == pause_id {
                     crate::status::set_paused(pause.is_checked());
                 } else if ev.id == reset_id {

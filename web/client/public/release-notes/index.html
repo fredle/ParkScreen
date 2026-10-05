@@ -16,7 +16,15 @@
   <a class="cta" href="https://parkscreen-releases.web.app/ParkScreen-win-Setup.exe">Download the latest</a>
 
   <article class="rel">
-    <h2>0.1.12 <span class="tag">Latest</span></h2><time datetime="2026-10-05">5 October 2026</time>
+    <h2>0.1.13 <span class="tag">Latest</span></h2><time datetime="2026-10-05">5 October 2026</time>
+    <ul>
+      <li>Tray menu: <strong>Allow touch from the car (controls this PC)</strong>. Tick it to let taps, drags and scrolling on the car's screen control your PC, for every paired car. It is off until you turn it on, and it is remembered. It takes effect straight away, with no reconnect. Previously this needed a command-line flag.</li>
+      <li>With <strong>Extend</strong>, touches go to the extended (ParkScreen) screen.</li>
+    </ul>
+  </article>
+
+  <article class="rel">
+    <h2>0.1.12</h2><time datetime="2026-10-05">5 October 2026</time>
     <ul>
       <li><strong>Extend mode now works.</strong> The ParkScreen display driver is rebuilt so it starts, adds the car's screen as a second monitor in exactly the car's resolution, and removes it when the car leaves. Earlier driver builds crashed or could not be controlled.</li>
       <li>The driver is signed with a real publisher certificate (FBL Consulting Ltd), so Windows <strong>no longer needs test-signing mode</strong> and Secure Boot can stay on. Windows asks once, &ldquo;Would you like to install this device software?&rdquo;, because the driver is not signed by Microsoft. Choose Install.</li>

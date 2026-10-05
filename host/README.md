@@ -25,7 +25,7 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
   Off by default, because it resizes a real monitor.
 - Without Windows (or for tests) the agent streams a test pattern through OpenH264.
 - Updates itself (Velopack, `updater.rs`): checks the feed every 4 hours and restarts into a newer version when no car is streaming.
-- **Tray:** with no arguments the app runs from the system tray (status, Pair a car…, Pause streaming, Reset connection, display mode, open website, check for updates, Start with Windows, Quit), one instance per user, no admin rights needed. `--pair` or `--no-tray` runs in a terminal instead and prints the code.
+- **Tray:** with no arguments the app runs from the system tray (status, Pair a car…, Pause streaming, Reset connection, display mode, Allow touch from the car, open website, check for updates, Start with Windows, Quit), one instance per user, no admin rights needed. `--pair` or `--no-tray` runs in a terminal instead and prints the code.
 - **Display driver (Extend mode):** the tray item *Install display driver (needs admin)…* (also
   `parkscreen-host driver install`, and `driver check`) reads the manifest of the rolling GitHub
   release `driver`, downloads `ParkScreenIdd.zip`, checks its SHA-256, unpacks it under
@@ -35,7 +35,7 @@ parkscreen-host set-mode --monitor 2 1920x1200@60
   without asking. The driver is signed with Azure Trusted Signing (publisher FBL Consulting Ltd), so
   no test-signing mode is needed; Windows asks once whether to trust the publisher. A package with
   `"testSigned": true` in the manifest still needs test-signing on, and the install says so if it is not.
-- Touch: car touches are injected as real multi-touch contacts on the shared monitor (`InjectTouchInput`); scroll uses the mouse wheel. Needs `--with-input` or a car paired with input allowed.
+- Touch: car touches are injected as real multi-touch contacts on the shared monitor (`InjectTouchInput`); scroll uses the mouse wheel. Off until you tick **Allow touch from the car** in the tray menu (remembered; covers every paired car); `--with-input`, or an `input` flag on a car in `cars.txt`, enables single cars.
 
 Build from the repo root: `cargo build --release -p parkscreen-host` (needs the MSVC build
 tools). `RUST_LOG=parkscreen_host=debug` for more logging. Windows-only modules are in

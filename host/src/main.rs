@@ -264,7 +264,15 @@ async fn main() {
     let mut handler = {
         let gate = allow.clone();
         WebRtcHandler::new(display, media)
-            .with_input(injector, Arc::new(move |car| gate.lock().unwrap().input_allowed(car)))
+            .with_input(
+                injector,
+                // The tray's "Allow touch" switch covers every paired car; `--with-input` and an
+                // `input` flag in cars.txt still enable single cars.
+                Arc::new(move |car| {
+                    let al = gate.lock().unwrap();
+                    al.input_allowed(car) || (parkscreen_host::settings::touch_enabled() && al.allows(car))
+                }),
+            )
     };
     if let Some(k) = bitrate_kbps {
         handler.bitrate_kbps = k;

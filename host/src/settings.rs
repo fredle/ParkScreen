@@ -42,6 +42,8 @@ impl FromStr for DisplayMode {
 static FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static MODE_EXTEND: AtomicBool = AtomicBool::new(false);
 static DRIVER_PRESENT: AtomicBool = AtomicBool::new(false);
+static TOUCH_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+static TOUCH_ON: AtomicBool = AtomicBool::new(false);
 
 /// Load the saved choice from `dir/display-mode.txt`. Duplicate is the default until the user picks.
 pub fn init(dir: &std::path::Path) {
@@ -52,6 +54,30 @@ pub fn init(dir: &std::path::Path) {
         }
     }
     *FILE.lock().unwrap() = Some(file);
+
+    let touch = dir.join("touch.txt");
+    if let Ok(text) = std::fs::read_to_string(&touch) {
+        TOUCH_ON.store(text.trim().eq_ignore_ascii_case("on"), Ordering::Relaxed);
+    }
+    *TOUCH_FILE.lock().unwrap() = Some(touch);
+}
+
+/// Whether paired cars may control this PC by touch (the tray's "Allow touch" switch). Off until
+/// the user turns it on, and remembered between runs.
+pub fn touch_enabled() -> bool {
+    TOUCH_ON.load(Ordering::Relaxed)
+}
+
+pub fn set_touch_enabled(on: bool) {
+    TOUCH_ON.store(on, Ordering::Relaxed);
+    if let Some(file) = TOUCH_FILE.lock().unwrap().as_ref() {
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(file, if on { "on" } else { "off" }) {
+            tracing::warn!("could not save the touch setting: {e}");
+        }
+    }
 }
 
 /// The mode the user chose.
@@ -100,6 +126,21 @@ pub fn set_driver_present(v: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touch_is_off_by_default_and_remembered() {
+        let dir = std::env::temp_dir().join(format!("ps-touch-{}", rand::random::<u32>()));
+        init(&dir);
+        assert!(!touch_enabled());
+        set_touch_enabled(true);
+        assert!(std::fs::read_to_string(dir.join("touch.txt")).unwrap() == "on");
+        TOUCH_ON.store(false, Ordering::Relaxed);
+        init(&dir);
+        assert!(touch_enabled());
+        set_touch_enabled(false);
+        assert!(!touch_enabled());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn parses_modes() {
