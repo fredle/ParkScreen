@@ -268,6 +268,18 @@ mod tests {
         assert!(validate(m(100, 1080, 60)).is_err());
     }
 
+    /// Needs the driver installed: `cargo test -p parkscreen-host -- --ignored plug_a_monitor`.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore]
+    async fn plug_a_monitor() {
+        use crate::display::DisplayBackend;
+        let mut d = IddDisplay::default();
+        d.plug(Mode { width: 1920, height: 1080, refresh_hz: 60 }).await.expect("plug");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        d.unplug().await.expect("unplug");
+    }
+
     #[test]
     fn plug_payload_layout() {
         let b = plug_bytes(Mode { width: 1, height: 2, refresh_hz: 3 });

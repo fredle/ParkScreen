@@ -125,7 +125,7 @@ jobs:
             url        = "https://github.com/${{ github.repository }}/releases/download/driver/ParkScreenIdd.zip"
             sha256     = $sha
             testSigned = $false
-            minHost    = "0.1.9"
+            minHost    = "0.1.12"
           }
           ($manifest | ConvertTo-Json -Compress) | Set-Content (Join-Path $dist "driver-manifest.json") -Encoding ASCII
           Get-Content (Join-Path $dist "driver-manifest.json")
