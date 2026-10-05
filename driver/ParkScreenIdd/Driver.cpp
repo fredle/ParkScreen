@@ -119,6 +119,7 @@ NTSTATUS PlugLocked(const ParkScreenMode& mode, void* owner)
     in.pMonitorInfo = &info;
     IDARG_OUT_MONITORCREATE out = {};
     st = IddCxMonitorCreate(g.adapter, &in, &out);
+    Log("IddCxMonitorCreate 0x%08x", st);
     if (!NT_SUCCESS(st)) { Log("IddCxMonitorCreate failed 0x%08x (adapter init 0x%08x)", st, g.adapterInit); return st; }
 
     IDARG_OUT_MONITORARRIVAL arrival = {};
@@ -214,10 +215,11 @@ DWORD WINAPI ConnectionThread(LPVOID param)
 
 DWORD WINAPI PipeServerThread(LPVOID)
 {
-    // System and administrators: everything; interactive users: read and write (the agent runs
+    // System, administrators and LocalService (the driver host itself, which must be able to create
+    // further pipe instances): everything; interactive users: read and write (the agent runs
     // without administrator rights).
     PSECURITY_DESCRIPTOR sd = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", SDDL_REVISION_1, &sd, nullptr)) {
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GRGW;;;IU)", SDDL_REVISION_1, &sd, nullptr)) {
         Log("security descriptor failed %lu", GetLastError());
         return 1;
     }
@@ -352,12 +354,14 @@ NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_IN
 
 NTSTATUS EvtAdapterCommitModes(IDDCX_ADAPTER, const IDARG_IN_COMMITMODES*)
 {
+    Log("CommitModes");
     return STATUS_SUCCESS;
 }
 
 NTSTATUS EvtParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* in, IDARG_OUT_PARSEMONITORDESCRIPTION* out)
 {
     // The EDID is ours, and describes the one mode the host asked for.
+    Log("ParseMonitorDescription in=%u", in->MonitorModeBufferInputCount);
     out->MonitorModeBufferOutputCount = 1;
     if (in->MonitorModeBufferInputCount < 1) {
         return in->MonitorModeBufferInputCount > 0 ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
@@ -375,6 +379,7 @@ NTSTATUS EvtParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* in, 
 NTSTATUS EvtGetDefaultDescriptionModes(IDDCX_MONITOR, const IDARG_IN_GETDEFAULTDESCRIPTIONMODES* in,
                                        IDARG_OUT_GETDEFAULTDESCRIPTIONMODES* out)
 {
+    Log("GetDefaultDescriptionModes in=%u", in->DefaultMonitorModeBufferInputCount);
     out->DefaultMonitorModeBufferOutputCount = 1;
     if (in->DefaultMonitorModeBufferInputCount < 1) {
         return in->DefaultMonitorModeBufferInputCount > 0 ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
@@ -391,6 +396,7 @@ NTSTATUS EvtGetDefaultDescriptionModes(IDDCX_MONITOR, const IDARG_IN_GETDEFAULTD
 
 NTSTATUS EvtQueryTargetModes(IDDCX_MONITOR, const IDARG_IN_QUERYTARGETMODES* in, IDARG_OUT_QUERYTARGETMODES* out)
 {
+    Log("QueryTargetModes in=%u", in->TargetModeBufferInputCount);
     out->TargetModeBufferOutputCount = 1;
     if (in->TargetModeBufferInputCount < 1) {
         return in->TargetModeBufferInputCount > 0 ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
@@ -405,6 +411,7 @@ NTSTATUS EvtQueryTargetModes(IDDCX_MONITOR, const IDARG_IN_QUERYTARGETMODES* in,
 
 NTSTATUS EvtAssignSwapChain(IDDCX_MONITOR, const IDARG_IN_SETSWAPCHAIN* in)
 {
+    Log("AssignSwapChain");
     AcquireSRWLockExclusive(&g.procLock);
     delete g.processor;
     g.processor = new (std::nothrow) SwapChainProcessor(in->hSwapChain, in->RenderAdapterLuid, in->hNextSurfaceAvailable);
